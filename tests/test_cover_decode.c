@@ -119,13 +119,14 @@ int main(int argc, char **argv) {
     assert(cover_decode_image("icon-v4.png", tiled, COVER_ART_PIXELS,
                               error, sizeof(error)) == 0);
     assert(tiled[tiled_offset(0, 0)] ==
-           gpu_texture_rgba8(54, 179, 253, 255));
+           gpu_texture_rgba8(210, 225, 243, 229));
     assert(tiled[tiled_offset(64, 64)] ==
-           gpu_texture_rgba8(240, 214, 204, 255));
+           gpu_texture_rgba8(254, 218, 105, 255));
     assert(tiled[tiled_offset(127, 127)] ==
-           gpu_texture_rgba8(251, 190, 179, 255));
-    assert(cover_decode_image("banner-v2.png", tiled, COVER_ART_PIXELS,
-                              error, sizeof(error)) == 0);
+           gpu_texture_rgba8(210, 225, 243, 229));
+    assert(cover_decode_image("banner_3d/logo-128x64.png", tiled,
+                              COVER_ART_PIXELS, error,
+                              sizeof(error)) == 0);
 
     const char *interlaced_path =
         "/tmp/nm3ds-cover-decode-interlaced.png";
