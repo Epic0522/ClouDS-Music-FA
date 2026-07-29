@@ -21,14 +21,21 @@ bool immersive_font_data_init(ImmersiveFontData *font,
                               const uint8_t *bytes, size_t size) {
     if (font) memset(font, 0, sizeof(*font));
     if (!font || !bytes || size < IMMERSIVE_FONT_HEADER_BYTES ||
-        memcmp(bytes, IMMERSIVE_FONT_MAGIC, 4) != 0 ||
-        read_u16(bytes + 4) != IMMERSIVE_FONT_VERSION)
+        memcmp(bytes, IMMERSIVE_FONT_MAGIC, 4) != 0)
         return false;
 
+    uint16_t version = read_u16(bytes + 4);
+    if (version != IMMERSIVE_FONT_VERSION &&
+        version != IMMERSIVE_FONT_ALPHA_VERSION)
+        return false;
+    uint8_t alpha_bits =
+        version == IMMERSIVE_FONT_ALPHA_VERSION ? 2U : 1U;
     uint16_t glyph_width = read_u16(bytes + 6);
     uint16_t glyph_height = read_u16(bytes + 8);
     uint16_t bitmap_bytes = read_u16(bytes + 10);
-    size_t row_bytes = ((size_t)glyph_width + 7U) / 8U;
+    size_t row_bytes = alpha_bits == 2U ?
+        ((size_t)glyph_width + 3U) / 4U :
+        ((size_t)glyph_width + 7U) / 8U;
     if (glyph_width == 0 || glyph_height == 0 ||
         glyph_width > IMMERSIVE_FONT_MAX_GLYPH_WIDTH ||
         glyph_height > IMMERSIVE_FONT_MAX_GLYPH_HEIGHT ||
@@ -60,6 +67,7 @@ bool immersive_font_data_init(ImmersiveFontData *font,
     font->glyph_width = glyph_width;
     font->glyph_height = glyph_height;
     font->bitmap_bytes = bitmap_bytes;
+    font->alpha_bits = alpha_bits;
     font->entry_bytes = entry_bytes;
     return true;
 }
@@ -92,8 +100,23 @@ bool immersive_font_glyph_pixel(const ImmersiveFontData *font,
     if (!font || !glyph || !glyph->bitmap || x >= font->glyph_width ||
         y >= font->glyph_height)
         return false;
+    return immersive_font_glyph_alpha(font, glyph, x, y) != 0U;
+}
+
+uint8_t immersive_font_glyph_alpha(const ImmersiveFontData *font,
+                                   const ImmersiveFontGlyph *glyph,
+                                   unsigned int x, unsigned int y) {
+    if (!font || !glyph || !glyph->bitmap || x >= font->glyph_width ||
+        y >= font->glyph_height)
+        return 0U;
+    if (font->alpha_bits == 2U) {
+        size_t row_bytes = ((size_t)font->glyph_width + 3U) / 4U;
+        size_t offset = (size_t)y * row_bytes + x / 4U;
+        unsigned int shift = (3U - (x & 3U)) * 2U;
+        return (uint8_t)(((glyph->bitmap[offset] >> shift) & 3U) * 85U);
+    }
     size_t row_bytes = ((size_t)font->glyph_width + 7U) / 8U;
-    size_t offset = (size_t)y * row_bytes +
-                    x / 8U;
-    return (glyph->bitmap[offset] & (0x80U >> (x & 7U))) != 0;
+    size_t offset = (size_t)y * row_bytes + x / 8U;
+    return (glyph->bitmap[offset] & (0x80U >> (x & 7U))) ?
+           255U : 0U;
 }

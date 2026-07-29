@@ -57,7 +57,8 @@ uint64_t ui_control_marquee_cycle_ms(float overflow_width) {
     float scroll_ms = overflow_width * 1000.0f /
                       UI_CONTROL_MARQUEE_PIXELS_PER_SECOND;
     uint64_t rounded_scroll_ms = (uint64_t)(scroll_ms + 0.999f);
-    return UI_CONTROL_MARQUEE_START_PAUSE_MS + rounded_scroll_ms +
+    return UI_CONTROL_MARQUEE_START_PAUSE_MS +
+           rounded_scroll_ms * 2U +
            UI_CONTROL_MARQUEE_END_PAUSE_MS;
 }
 
@@ -66,8 +67,25 @@ float ui_control_marquee_offset(uint64_t elapsed_ms,
     if (overflow_width <= 0.0f ||
         elapsed_ms <= UI_CONTROL_MARQUEE_START_PAUSE_MS)
         return 0.0f;
-    uint64_t moving_ms = elapsed_ms - UI_CONTROL_MARQUEE_START_PAUSE_MS;
-    float offset = (float)moving_ms *
-                   UI_CONTROL_MARQUEE_PIXELS_PER_SECOND / 1000.0f;
-    return offset < overflow_width ? offset : overflow_width;
+    uint64_t scroll_ms = (uint64_t)(
+        overflow_width * 1000.0f /
+        UI_CONTROL_MARQUEE_PIXELS_PER_SECOND + 0.999f);
+    uint64_t phase_ms =
+        elapsed_ms - UI_CONTROL_MARQUEE_START_PAUSE_MS;
+    if (phase_ms < scroll_ms) {
+        float offset = (float)phase_ms *
+                       UI_CONTROL_MARQUEE_PIXELS_PER_SECOND / 1000.0f;
+        return offset < overflow_width ? offset : overflow_width;
+    }
+    phase_ms -= scroll_ms;
+    if (phase_ms <= UI_CONTROL_MARQUEE_END_PAUSE_MS)
+        return overflow_width;
+    phase_ms -= UI_CONTROL_MARQUEE_END_PAUSE_MS;
+    if (phase_ms < scroll_ms) {
+        float offset = overflow_width -
+            (float)phase_ms *
+            UI_CONTROL_MARQUEE_PIXELS_PER_SECOND / 1000.0f;
+        return offset > 0.0f ? offset : 0.0f;
+    }
+    return 0.0f;
 }

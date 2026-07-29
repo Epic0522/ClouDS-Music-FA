@@ -20,15 +20,27 @@ int main(void) {
     app.tab = TAB_NOW_PLAYING;
     app.album_open = true;
     assert(playback_selection_stays_on_page(&app));
-    assert(playback_back_should_preserve_extras(&app));
+    assert(!playback_back_should_preserve_extras(&app));
 
     app.album_open = false;
     assert(!playback_selection_stays_on_page(&app));
     assert(!playback_back_should_preserve_extras(&app));
+    app.queue_count = 2;
+    app.queue[0].id = 100;
+    app.queue[1].id = 200;
+    app.current_queue = 0;
+    app.pending_queue = 1;
+    app.extras_song_id = 200;
+    assert(playback_back_should_preserve_extras(&app));
+    app.extras_song_id = 100;
+    assert(!playback_back_should_preserve_extras(&app));
+    app.pending_queue = -1;
+    assert(playback_back_should_preserve_extras(&app));
     app.tab = TAB_DISCOVER;
     app.discover_section = DISCOVER_SEARCH;
     assert(playback_selection_stays_on_page(&app));
-    assert(playback_back_should_preserve_extras(&app));
+    app.extras_song_id = -1;
+    assert(!playback_back_should_preserve_extras(&app));
 
     app.discover_section = DISCOVER_HOME;
     assert(!playback_selection_stays_on_page(&app));

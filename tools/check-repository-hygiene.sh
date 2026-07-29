@@ -11,7 +11,7 @@ tracked_files=$(git -C "$PROJECT_ROOT" ls-files) || {
 while IFS= read -r path; do
     basename=${path##*/}
     case "$basename" in
-        auth.bin|dspfirm.cdc|hardware.log|.env|*.key|*.p12|*.part|*.dmp|*.dump|*.3dsx|*.cia|*.elf|*.smdh|*.bnr)
+        .DS_Store|auth.bin|dspfirm.cdc|hardware.log|.env|*.key|*.p12|*.part|*.dmp|*.dump|*.3dsx|*.cia|*.elf|*.smdh|*.bnr)
             echo "error: forbidden generated, sensitive, or proprietary file is tracked: $path" >&2
             status=1
             ;;

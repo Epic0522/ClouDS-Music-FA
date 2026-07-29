@@ -79,6 +79,19 @@ def validate_archive_name(name: str) -> str:
 def tracked_files(
     project_root: Path, include_untracked: bool
 ) -> list[tuple[str, Path, int]]:
+    deleted = set()
+    if include_untracked:
+        deleted_output = subprocess.run(
+            ["git", "ls-files", "-z", "--deleted"],
+            cwd=project_root,
+            check=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        deleted = {
+            raw_name.decode("utf-8")
+            for raw_name in deleted_output.split(b"\0")
+            if raw_name
+        }
     outputs = [subprocess.run(
         ["git", "ls-files", "-z"],
         cwd=project_root,
@@ -99,6 +112,8 @@ def tracked_files(
         if not raw_name:
             continue
         name = validate_archive_name(raw_name.decode("utf-8"))
+        if name in deleted:
+            continue
         path = project_root / name
         # A gitlink is listed by the superproject but is a directory on disk.
         if path.is_dir() and name == "external/minimp3":

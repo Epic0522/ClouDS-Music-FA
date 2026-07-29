@@ -5,10 +5,19 @@
 #include <stdint.h>
 
 #include "i18n.h"
+#include "model.h"
 
 typedef struct {
     uint64_t cache_limit;
     AppLanguage language;
+    ControlColorMode control_color_mode;
+    LyricAlignment lyric_alignment;
+    ImmersivePlaybackMode immersive_playback_mode;
+    uint32_t immersive_delay_seconds;
+    bool reduced_motion;
+    bool dark_theme;
+    PlayMode play_mode;
+    VisualizerMode visualizer_mode;
     bool debug_logging;
 } AppSettings;
 

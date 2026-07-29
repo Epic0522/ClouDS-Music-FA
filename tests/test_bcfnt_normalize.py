@@ -44,7 +44,7 @@ def main() -> int:
     old, new = MODULE.normalize(font)
     assert old == new == bytes((0, 6, 6))
     assert hashlib.sha256(font).hexdigest() == (
-        "50188f89a2526b1c34664a51aeee0517e3a9939f78f67cc0501df16f857e4907"
+        "1082b2e682a6b26ef39c9b70ae3c6c600eed51566c8a057fd9a8cfcbcbd34a04"
     )
     print("BCFNT normalization tests passed")
     return 0

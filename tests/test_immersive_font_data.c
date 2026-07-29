@@ -9,9 +9,6 @@
 #define TEST_GLYPH_HEIGHT 32U
 #define TEST_BITMAP_BYTES 96U
 #define TEST_ENTRY_BYTES 104U
-#define COMMITTED_GLYPH_COUNT 13743U
-#define COMMITTED_HANGUL_SYLLABLES 3500U
-
 static void write_u16(uint8_t *output, uint16_t value) {
     output[0] = (uint8_t)value;
     output[1] = (uint8_t)(value >> 8U);
@@ -48,12 +45,15 @@ static void make_font(uint8_t *bytes, size_t size) {
 }
 
 static void verify_committed_font(const char *path,
-                                  uint16_t width, uint16_t height) {
+                                  uint16_t width, uint16_t height,
+                                  uint8_t alpha_bits,
+                                  uint32_t expected_glyph_count,
+                                  size_t expected_hangul_syllables) {
     FILE *stream = fopen(path, "rb");
     assert(stream);
     assert(fseek(stream, 0, SEEK_END) == 0);
     long encoded_size = ftell(stream);
-    assert(encoded_size > 0 && encoded_size < 2 * 1024 * 1024);
+    assert(encoded_size > 0 && encoded_size < 6 * 1024 * 1024);
     assert(fseek(stream, 0, SEEK_SET) == 0);
     uint8_t *bytes = (uint8_t *)malloc((size_t)encoded_size);
     assert(bytes);
@@ -63,13 +63,19 @@ static void verify_committed_font(const char *path,
 
     ImmersiveFontData font;
     assert(immersive_font_data_init(&font, bytes, (size_t)encoded_size));
-    assert(font.glyph_count == COMMITTED_GLYPH_COUNT);
+    assert(font.glyph_count == expected_glyph_count);
     assert(font.glyph_width == width);
     assert(font.glyph_height == height);
+    assert(font.alpha_bits == alpha_bits);
     const uint32_t required[] = {
-        'A', '0', 0x25A1U, 0x5586U, 0x6B4CU, 0x767CU,
+        'A', '0',
+        0x00A9U, 0x20ACU, 0x2122U, 0x2192U, 0x221EU,
+        0x2460U, 0x25A1U, 0x2605U, 0x2661U, 0x2665U,
+        0x266AU, 0x266BU, 0x2713U,
+        0x5586U, 0x6B4CU, 0x767CU,
         0x88E1U, 0x8BCDU,
         0xD55CU, 0xAD6DU, 0xC5B4U,
+        0x3042U, 0x30A2U, 0x50CDU, 0x5922U,
     };
     for (size_t i = 0; i < sizeof(required) / sizeof(required[0]); i++) {
         ImmersiveFontGlyph glyph;
@@ -81,6 +87,25 @@ static void verify_committed_font(const char *path,
                     &font, &glyph, x, y);
         assert(visible);
     }
+    if (width == 24U && height == 32U && alpha_bits == 1U) {
+        const uint32_t descenders[] = {'g', 'j', 'p', 'q', 'y'};
+        for (size_t i = 0;
+             i < sizeof(descenders) / sizeof(descenders[0]); i++) {
+            ImmersiveFontGlyph glyph;
+            assert(immersive_font_data_lookup(
+                &font, descenders[i], &glyph));
+            bool bottom_row_visible = false;
+            bool descender_visible = false;
+            for (unsigned int x = 0; x < font.glyph_width; x++) {
+                bottom_row_visible |= immersive_font_glyph_pixel(
+                    &font, &glyph, x, font.glyph_height - 1U);
+                descender_visible |= immersive_font_glyph_pixel(
+                    &font, &glyph, x, font.glyph_height - 2U);
+            }
+            assert(!bottom_row_visible);
+            assert(descender_visible);
+        }
+    }
     size_t hangul_count = 0;
     for (uint32_t codepoint = 0xAC00U; codepoint <= 0xD7A3U;
          codepoint++) {
@@ -88,7 +113,7 @@ static void verify_committed_font(const char *path,
         if (immersive_font_data_lookup(&font, codepoint, &glyph))
             hangul_count++;
     }
-    assert(hangul_count == COMMITTED_HANGUL_SYLLABLES);
+    assert(hangul_count == expected_hangul_syllables);
     free(bytes);
 }
 
@@ -125,9 +150,15 @@ int main(void) {
     write_u32(second, 'A');
     assert(!immersive_font_data_init(&font, bytes, sizeof(bytes)));
 
-    verify_committed_font("romfs/immersive-font.bin", 24, 32);
-    verify_committed_font("romfs/content-point-font.bin", 18, 24);
-    verify_committed_font("romfs/content-large-point-font.bin", 18, 24);
+    verify_committed_font(
+        "romfs/immersive-font.bin", 24, 32, 1, 45208U, 11172U);
+    verify_committed_font(
+        "romfs/immersive-font-jp.bin", 24, 32, 1, 45208U, 11172U);
+    verify_committed_font(
+        "romfs/content-point-font.bin", 18, 24, 2, 32639U, 3500U);
+    verify_committed_font(
+        "romfs/content-large-point-font.bin", 18, 24, 2,
+        32639U, 3500U);
 
     puts("immersive font data tests: ok");
     return 0;

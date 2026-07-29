@@ -26,7 +26,11 @@ jobs:
       - name: Install host test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes zlib1g-dev
+          sudo apt-get install --yes \
+            libjpeg-dev \
+            libmbedtls-dev \
+            libpng-dev \
+            zlib1g-dev
 
       - name: Run host-side tests
         run: |

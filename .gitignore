@@ -13,6 +13,13 @@ dist/
 __pycache__/
 *.pyc
 .tools/
+# Local development notes; the public project documentation lives in README.
+A.md
+banner_work/
+banner_3d/banner-scene.bin
+banner_3d/banner-scene.cgfx
+banner_3d/banner-scene.gltf
+banner_3d/ClouDS_PixelGradient_Texture_128.png
 tests/test_json
 tests/test_ime
 tests/test_ime_candidate_layout
@@ -42,7 +49,12 @@ tests/test_cover_decode
 tests/test_dsp_firmware_help
 tests/test_immersive_font_data
 tests/test_playback_navigation
+tests/test_player_gesture
 tests/test_song_index
+tests/test_ui_sound_scene
+tests/test_ambient_state
+tests/test_lyric_parser
+tests/test_ui_motion
 data/
 sdmc/
 luma/

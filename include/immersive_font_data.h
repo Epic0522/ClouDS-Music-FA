@@ -6,9 +6,10 @@
 
 #define IMMERSIVE_FONT_MAGIC "IMBF"
 #define IMMERSIVE_FONT_VERSION 1U
+#define IMMERSIVE_FONT_ALPHA_VERSION 2U
 #define IMMERSIVE_FONT_MAX_GLYPH_WIDTH 24U
 #define IMMERSIVE_FONT_MAX_GLYPH_HEIGHT 32U
-#define IMMERSIVE_FONT_MAX_BITMAP_BYTES 96U
+#define IMMERSIVE_FONT_MAX_BITMAP_BYTES 192U
 #define IMMERSIVE_FONT_HEADER_BYTES 16U
 
 typedef struct {
@@ -18,6 +19,7 @@ typedef struct {
     uint16_t glyph_width;
     uint16_t glyph_height;
     uint16_t bitmap_bytes;
+    uint8_t alpha_bits;
     size_t entry_bytes;
 } ImmersiveFontData;
 
@@ -35,3 +37,6 @@ bool immersive_font_data_lookup(const ImmersiveFontData *font,
 bool immersive_font_glyph_pixel(const ImmersiveFontData *font,
                                 const ImmersiveFontGlyph *glyph,
                                 unsigned int x, unsigned int y);
+uint8_t immersive_font_glyph_alpha(const ImmersiveFontData *font,
+                                   const ImmersiveFontGlyph *glyph,
+                                   unsigned int x, unsigned int y);

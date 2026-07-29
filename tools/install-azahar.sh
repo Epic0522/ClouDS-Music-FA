@@ -3,9 +3,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VERSION=2125.1.3
-TOOLS_DIR="$ROOT/.tools"
-DEST="$TOOLS_DIR/Azahar.app"
-MARKER="$TOOLS_DIR/azahar-version"
+DEST="${HOME}/Azahar.app"
+MARKER="${HOME}/.azahar-version"
 
 if [[ $(uname -s) != Darwin ]]; then
     echo "error: automatic Azahar installation currently supports macOS only" >&2
@@ -50,7 +49,6 @@ if [[ -z "$APP" ]]; then
     exit 1
 fi
 
-mkdir -p "$TOOLS_DIR"
 rm -rf "$DEST"
 mv "$APP" "$DEST"
 printf '%s\n' "$VERSION" > "$MARKER"

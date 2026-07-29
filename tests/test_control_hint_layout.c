@@ -58,11 +58,13 @@ int main(void) {
     }
 
     assert(!ui_control_hint_plan(compact, UI_CONTROL_HINT_MAX + 1, &plan));
-    assert(ui_control_marquee_cycle_ms(14.0f) == 3500);
+    assert(ui_control_marquee_cycle_ms(14.0f) == 4500);
     assert_close(ui_control_marquee_offset(1000, 14.0f), 0.0f);
     assert_close(ui_control_marquee_offset(2000, 14.0f), 7.0f);
     assert_close(ui_control_marquee_offset(2500, 14.0f), 14.0f);
-    assert_close(ui_control_marquee_offset(4000, 14.0f), 14.0f);
+    assert_close(ui_control_marquee_offset(3500, 14.0f), 14.0f);
+    assert_close(ui_control_marquee_offset(4000, 14.0f), 7.0f);
+    assert_close(ui_control_marquee_offset(4500, 14.0f), 0.0f);
 
     puts("control hint layout tests: ok");
     return 0;

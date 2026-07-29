@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-APP=${AZAHAR_APP:-"$ROOT/.tools/Azahar.app"}
+APP=${AZAHAR_APP:-"${HOME}/Azahar.app"}
 BIN="$APP/Contents/MacOS/azahar"
 
 if [[ ! -x "$BIN" ]]; then

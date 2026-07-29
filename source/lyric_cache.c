@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define LYRIC_CACHE_HEADER "# ClouDS-Music lyric cache v1\n"
+#define LYRIC_CACHE_HEADER "# ClouDS-Music lyric cache v2\n"
 #define LYRIC_CACHE_LINE_CAPACITY 192U
 
 static void set_error(char *error, size_t size, const char *format, ...) {

@@ -1,6 +1,6 @@
 BasicInfo:
   Title: CLOUDS
-  ProductCode: CTR-H-C10D
+  ProductCode: CTR-H-C20D
   Logo: Homebrew
 
 RomFs:
@@ -8,7 +8,7 @@ RomFs:
 
 TitleInfo:
   Category: Application
-  UniqueId: 0xC10D5
+  UniqueId: 0xC20D7
 
 Option:
   UseOnSD: true

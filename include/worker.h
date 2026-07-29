@@ -16,6 +16,7 @@ typedef enum {
     WORKER_JOB_PLAYLIST_TRACKS,
     WORKER_JOB_PLAYLIST_ENQUEUE,
     WORKER_JOB_ALBUM_TRACKS,
+    WORKER_JOB_ARTIST_TRACKS,
     WORKER_JOB_ALBUM_ENQUEUE,
     WORKER_JOB_RECOMMENDATION_ENQUEUE,
     WORKER_JOB_SEARCH,
@@ -44,11 +45,13 @@ typedef struct {
     WorkerJobKind kind;
     Song song;
     char query[96];
+    SearchCategory search_category;
     size_t offset;
     uint32_t queue_cache_scan_generation;
     RecommendationSource recommendation_source;
     int64_t playlist_id;
     int64_t album_id;
+    int64_t artist_id;
     int64_t protected_song;
     uint64_t cache_limit;
     bool force_download;
@@ -75,11 +78,15 @@ typedef struct {
 
     Song songs[NM3DS_RECOMMEND_RESULTS];
     size_t song_count;
+    NeteaseSearchItem search_items[NM3DS_MAX_RESULTS];
+    size_t search_item_count;
+    SearchCategory search_category;
     NeteasePlaylist playlists[NM3DS_LIBRARY_PAGE];
     size_t playlist_count;
     int64_t playlist_id;
     size_t playlist_track_total;
     int64_t album_id;
+    int64_t artist_id;
     char album_name[96];
     size_t album_track_total;
     size_t offset;

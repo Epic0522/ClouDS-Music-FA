@@ -50,6 +50,10 @@ int netease_search(NeteaseClient *client, const char *query,
                    size_t offset, Song *songs, size_t capacity,
                    size_t *count, bool *has_more,
                    char *error, size_t error_size);
+int netease_search_category(
+    NeteaseClient *client, const char *query, SearchCategory category,
+    size_t offset, Song *songs, NeteaseSearchItem *items, size_t capacity,
+    size_t *count, bool *has_more, char *error, size_t error_size);
 int netease_song_detail(NeteaseClient *client, int64_t song_id,
                         Song *song, char *error, size_t error_size);
 int netease_song_album_detail(NeteaseClient *client, int64_t song_id,
@@ -81,6 +85,11 @@ int netease_album_tracks(NeteaseClient *client, int64_t album_id,
                          size_t *count, bool *has_more,
                          size_t *total_count,
                          char *error, size_t error_size);
+int netease_artist_tracks(NeteaseClient *client, int64_t artist_id,
+                          size_t offset, Song *songs, size_t capacity,
+                          size_t *count, bool *has_more,
+                          size_t *total_count,
+                          char *error, size_t error_size);
 int netease_lyrics(NeteaseClient *client, int64_t song_id,
                    LyricLine *lines, size_t capacity,
                    size_t *count, char *error, size_t error_size);

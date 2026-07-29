@@ -34,32 +34,42 @@ int main(void) {
     assert(strcmp(i18n_text("GitHub 仓库"), "GitHub repository") == 0);
     assert(strcmp(i18n_text("联系作者反馈"),
                   "Contact & feedback") == 0);
-    assert(strcmp(i18n_text("邮箱：cadl@duck.com"),
-                  "Email: cadl@duck.com") == 0);
-    assert(strcmp(i18n_text("小红书号：cadl11"),
-                  "Xiaohongshu: cadl11") == 0);
     assert(strcmp(i18n_text("开源软件，免费发布"),
-                  "Open source - released free") == 0);
+                  "Open source, released free") == 0);
     assert(strcmp(i18n_text("浏览"), "Browse") == 0);
     assert(strcmp(i18n_text("无操作"), "No action") == 0);
     assert(strcmp(i18n_text("打开网易云音乐 APP"),
                   "Open NetEase Music") == 0);
     assert(strcmp(i18n_text("扫码登录"), "Scan to log in") == 0);
+    assert(strcmp(i18n_text("B / SELECT 返回"),
+                  "B / SELECT Back") == 0);
+    assert(strcmp(i18n_text("收藏与创建的歌单"),
+                  "Saved and created playlists") == 0);
+    assert(strcmp(i18n_text("A 调整 · 十字键选择"),
+                  "A Adjust · D-pad Select") == 0);
+    assert(strcmp(i18n_text("单色深灰"), "Solid dark gray") == 0);
+    assert(i18n_snprintf(
+               status, sizeof(status),
+               "歌曲 %u · 歌词 %u · 封面 %u · %.1f MB",
+               12U, 10U, 11U, 42.5) > 0);
+    assert(strcmp(
+               status,
+               "Songs 12 · Lyrics 10 · Covers 11 · 42.5 MB") == 0);
+    assert(strcmp(i18n_text("波形"), "Oscilloscope") == 0);
+    assert(strcmp(i18n_text("频谱"), "Spectrum") == 0);
+    assert(strcmp(i18n_text("电平"), "Levels") == 0);
+    assert(i18n_snprintf(status, sizeof(status),
+                         "上屏视图：%s",
+                         i18n_text("实时频谱")) > 0);
+    assert(strcmp(status, "Top-screen view: Live spectrum") == 0);
     assert(i18n_snprintf(status, sizeof(status),
                          "正在准备播放 %u%%", 42U) > 0);
     assert(strcmp(status, "Preparing playback 42%") == 0);
     assert(i18n_snprintf(status, sizeof(status),
-                         "正在加载下一首 %u%%", 42U) > 0);
+                         "正在加载歌曲 %u%%", 42U) > 0);
     assert(strcmp(status, "Loading next track 42%") == 0);
     assert(strcmp(i18n_text("正在缓冲"), "Buffering") == 0);
     assert(strcmp(i18n_text("准备播放"), "Preparing playback") == 0);
-    assert(strcmp(i18n_text("沉浸"), "Immerse") == 0);
-    assert(strcmp(i18n_text("沉浸歌词"), "Immersive lyrics") == 0);
-    assert(strcmp(i18n_text("Y 切换"), "Y Style") == 0);
-    assert(strcmp(i18n_text("歌词滚轮"), "Lyric wheel") == 0);
-    assert(strcmp(i18n_text("中心翻转"), "Center flip") == 0);
-    assert(strcmp(i18n_text("骤现渐隐"), "Flash fade") == 0);
-    assert(strcmp(i18n_text("星际字幕"), "Opening crawl") == 0);
     assert(strcmp(i18n_text("专辑"), "Album") == 0);
     assert(strcmp(i18n_text("查看专辑"), "View album") == 0);
     assert(strcmp(i18n_text("专辑控制"), "Album controls") == 0);
@@ -70,10 +80,6 @@ int main(void) {
     assert(i18n_snprintf(status, sizeof(status),
                          "正在读取专辑歌曲 · 第 %u 页", 2U) > 0);
     assert(strcmp(status, "Reading album tracks · Page 2") == 0);
-    assert(strcmp(i18n_text("已进入沉浸歌词"),
-                  "Immersive lyrics opened") == 0);
-    assert(strcmp(i18n_text("已退出沉浸歌词"),
-                  "Immersive lyrics closed") == 0);
     assert(i18n_snprintf(status, sizeof(status),
                          "歌曲加载中 · 第 %u 页", 3U) > 0);
     assert(strcmp(status, "Loading tracks · Page 3") == 0);

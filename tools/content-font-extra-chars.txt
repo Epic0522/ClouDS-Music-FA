@@ -15,3 +15,6 @@
 
 # Less-common characters observed in Chinese-language music metadata
 霑 隽 筠 莹 萨 郁 弦
+
+# Symbols observed in song titles and lyrics
+♡

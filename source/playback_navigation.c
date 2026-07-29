@@ -14,7 +14,11 @@ bool playback_selection_stays_on_page(const AppState *app) {
 
 bool playback_back_should_preserve_extras(const AppState *app) {
     if (!app) return false;
-    return app->tab != TAB_NOW_PLAYING || app->album_open;
+    int index = app->pending_queue >= 0 &&
+                app->pending_queue < (int)app->queue_count ?
+                app->pending_queue : app->current_queue;
+    return index >= 0 && index < (int)app->queue_count &&
+           app->extras_song_id == app->queue[index].id;
 }
 
 bool playback_album_page_target(size_t current_offset, bool has_more,

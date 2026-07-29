@@ -12,6 +12,7 @@
 #pragma GCC diagnostic pop
 
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -775,6 +776,208 @@ double player_position(const Player *player) {
 double player_duration(const Player *player) {
     if (!player || player->sample_rate <= 0) return 0.0;
     return (double)player->total_frames / player->sample_rate;
+}
+
+bool player_visualizer_frame(const Player *player,
+                             PlayerVisualizerFrame *frame) {
+    enum { ANALYSIS_FRAMES = 256 };
+    static bool coefficients_ready;
+    static float window[ANALYSIS_FRAMES];
+    static float cosine[PLAYER_VISUALIZER_BANDS][ANALYSIS_FRAMES];
+    static float sine[PLAYER_VISUALIZER_BANDS][ANALYSIS_FRAMES];
+
+    if (!frame) return false;
+    memset(frame, 0, sizeof(*frame));
+    if (!player || !player->active || !player->ndsp_ready ||
+        player->buffering || player->channels <= 0)
+        return false;
+
+    const ndspWaveBuf *playing = NULL;
+    for (int i = 0; i < PLAYER_BUFFERS; i++) {
+        if (player->queued[i] &&
+            player->waves[i].status == NDSP_WBUF_PLAYING) {
+            playing = &player->waves[i];
+            break;
+        }
+    }
+    if (!playing || !playing->data_pcm16 || playing->nsamples == 0)
+        return false;
+
+    if (!coefficients_ready) {
+        const float tau = 6.2831853071795864769f;
+        for (int sample = 0; sample < ANALYSIS_FRAMES; sample++)
+            window[sample] = 0.5f - 0.5f *
+                cosf(tau * sample / (float)(ANALYSIS_FRAMES - 1));
+        for (int band = 0; band < PLAYER_VISUALIZER_BANDS; band++) {
+            /* Spread the display over useful musical bins while keeping the
+             * small, deterministic DFT cheap enough for Old 3DS hardware. */
+            float position =
+                (float)band / (float)(PLAYER_VISUALIZER_BANDS - 1);
+            int bin = 1 + (int)(position * position * 47.0f + 0.5f);
+            for (int sample = 0; sample < ANALYSIS_FRAMES; sample++) {
+                float phase = tau * bin * sample / ANALYSIS_FRAMES;
+                cosine[band][sample] = cosf(phase);
+                sine[band][sample] = sinf(phase);
+            }
+        }
+        coefficients_ready = true;
+    }
+
+    u32 cursor = ndspChnGetSamplePos(0);
+    u32 available = playing->nsamples;
+    u32 start = cursor > ANALYSIS_FRAMES / 2 ?
+                cursor - ANALYSIS_FRAMES / 2 : 0U;
+    if (available > ANALYSIS_FRAMES &&
+        start + ANALYSIS_FRAMES > available)
+        start = available - ANALYSIS_FRAMES;
+
+    float mono[ANALYSIS_FRAMES];
+    double left_energy = 0.0;
+    double right_energy = 0.0;
+    float peak = 0.0f;
+    for (int sample = 0; sample < ANALYSIS_FRAMES; sample++) {
+        u32 frame_index = start + (u32)sample;
+        if (frame_index >= available)
+            frame_index = available - 1U;
+        size_t base = (size_t)frame_index * (size_t)player->channels;
+        float left = playing->data_pcm16[base] / 32768.0f;
+        float right = player->channels > 1 ?
+            playing->data_pcm16[base + 1U] / 32768.0f : left;
+        mono[sample] = (left + right) * 0.5f;
+        left_energy += left * left;
+        right_energy += right * right;
+        float magnitude = fabsf(left);
+        if (fabsf(right) > magnitude) magnitude = fabsf(right);
+        if (magnitude > peak) peak = magnitude;
+    }
+
+    for (int point = 0; point < PLAYER_VISUALIZER_WAVE_SAMPLES; point++) {
+        int sample = point * ANALYSIS_FRAMES /
+                     PLAYER_VISUALIZER_WAVE_SAMPLES;
+        u32 frame_index = start + (u32)sample;
+        if (frame_index >= available)
+            frame_index = available - 1U;
+        size_t base = (size_t)frame_index * (size_t)player->channels;
+        frame->left[point] =
+            playing->data_pcm16[base] / 32768.0f;
+        frame->right[point] = player->channels > 1 ?
+            playing->data_pcm16[base + 1U] / 32768.0f :
+            frame->left[point];
+    }
+
+    for (int band = 0; band < PLAYER_VISUALIZER_BANDS; band++) {
+        float real = 0.0f;
+        float imaginary = 0.0f;
+        for (int sample = 0; sample < ANALYSIS_FRAMES; sample++) {
+            float value = mono[sample] * window[sample];
+            real += value * cosine[band][sample];
+            imaginary -= value * sine[band][sample];
+        }
+        float magnitude = sqrtf(real * real + imaginary * imaginary) /
+                          36.0f;
+        frame->spectrum[band] = magnitude > 1.0f ? 1.0f : magnitude;
+    }
+    frame->left_rms = sqrtf((float)(left_energy / ANALYSIS_FRAMES));
+    frame->right_rms = sqrtf((float)(right_energy / ANALYSIS_FRAMES));
+    frame->peak = peak;
+    frame->ready = true;
+    return true;
+}
+
+bool player_bass_level(const Player *player, float *level) {
+    enum {
+        ANALYSIS_FRAMES = 512,
+        BASS_BANDS = 4
+    };
+    static bool coefficients_ready;
+    static float window[ANALYSIS_FRAMES];
+    static float cosine[BASS_BANDS][ANALYSIS_FRAMES];
+    static float sine[BASS_BANDS][ANALYSIS_FRAMES];
+    static const int bins[BASS_BANDS] = {1, 2, 3, 4};
+    static const float weights[BASS_BANDS] = {
+        1.00f, 0.82f, 0.56f, 0.34f
+    };
+    if (!level) return false;
+    *level = 0.0f;
+    if (!player || !player->active || player->paused ||
+        !player->ndsp_ready ||
+        player->buffering || player->channels <= 0)
+        return false;
+
+    const ndspWaveBuf *playing = NULL;
+    for (int i = 0; i < PLAYER_BUFFERS; i++) {
+        if (player->queued[i] &&
+            player->waves[i].status == NDSP_WBUF_PLAYING) {
+            playing = &player->waves[i];
+            break;
+        }
+    }
+    if (!playing || !playing->data_pcm16 || playing->nsamples == 0)
+        return false;
+
+    if (!coefficients_ready) {
+        const float tau = 6.2831853071795864769f;
+        for (int sample = 0; sample < ANALYSIS_FRAMES; sample++)
+            window[sample] = 0.5f - 0.5f *
+                cosf(tau * sample / (float)(ANALYSIS_FRAMES - 1));
+        for (int band = 0; band < BASS_BANDS; band++) {
+            for (int sample = 0; sample < ANALYSIS_FRAMES; sample++) {
+                float phase =
+                    tau * bins[band] * sample / ANALYSIS_FRAMES;
+                cosine[band][sample] = cosf(phase);
+                sine[band][sample] = sinf(phase);
+            }
+        }
+        coefficients_ready = true;
+    }
+
+    u32 cursor = ndspChnGetSamplePos(0);
+    u32 available = playing->nsamples;
+    u32 analysis_frames = available < ANALYSIS_FRAMES ?
+                          available : ANALYSIS_FRAMES;
+    u32 start = cursor > analysis_frames / 2U ?
+                cursor - analysis_frames / 2U : 0U;
+    if (start + analysis_frames > available)
+        start = available - analysis_frames;
+
+    /*
+     * Use the same Hann-windowed frequency separation as the pillar
+     * spectrum, but calculate only its four lowest distinct bins. This keeps
+     * vocals and broad loudness changes out of the cloud pulse while costing
+     * about one sixth of the full 24-band visualizer.
+     */
+    float mono[ANALYSIS_FRAMES] = {0};
+    for (u32 sample = 0U; sample < analysis_frames; sample++) {
+        u32 frame_index = start + (u32)sample;
+        size_t base = (size_t)frame_index * (size_t)player->channels;
+        float left = playing->data_pcm16[base] / 32768.0f;
+        float right = player->channels > 1 ?
+            playing->data_pcm16[base + 1U] / 32768.0f : left;
+        mono[sample] = (left + right) * 0.5f;
+    }
+
+    float energy = 0.0f;
+    float weight_sum = 0.0f;
+    for (int band = 0; band < BASS_BANDS; band++) {
+        float real = 0.0f;
+        float imaginary = 0.0f;
+        for (u32 sample = 0U; sample < analysis_frames; sample++) {
+            float value = mono[sample] * window[sample];
+            real += value * cosine[band][sample];
+            imaginary -= value * sine[band][sample];
+        }
+        /* 512/72 matches the visualizer's 256/36 display normalization. */
+        float magnitude =
+            sqrtf(real * real + imaginary * imaginary) / 72.0f;
+        energy += magnitude * magnitude * weights[band];
+        weight_sum += weights[band];
+    }
+    float bass = weight_sum > 0.0f ?
+        sqrtf(energy / weight_sum) : 0.0f;
+    bass = bass > 0.012f ? (bass - 0.012f) * 1.85f : 0.0f;
+    if (bass > 1.0f) bass = 1.0f;
+    *level = bass;
+    return true;
 }
 
 void player_destroy(Player *player) {

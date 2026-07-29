@@ -10,6 +10,22 @@ from fontTools.ttLib import TTFont
 
 DICTIONARY_HEADER = struct.Struct("<4sIIIIII")
 
+# Common BMP symbols found in song titles, artist names and lyrics. Keep these
+# as ranges so dynamic metadata does not need a source-code occurrence before
+# it can be rendered by the compact point fonts.
+COMMON_SYMBOL_RANGES = (
+    (0x20A0, 0x20CF),  # Currency Symbols
+    (0x2100, 0x214F),  # Letterlike Symbols
+    (0x2190, 0x21FF),  # Arrows
+    (0x2200, 0x22FF),  # Mathematical Operators
+    (0x2460, 0x24FF),  # Enclosed Alphanumerics
+    (0x2500, 0x257F),  # Box Drawing
+    (0x25A0, 0x25FF),  # Geometric Shapes
+    (0x2600, 0x26FF),  # Miscellaneous Symbols, including music notes
+    (0x2700, 0x27BF),  # Dingbats
+    (0x2B00, 0x2BFF),  # Miscellaneous Symbols and Arrows
+)
+
 
 def extra_codepoints(path: Path | None) -> set[int]:
     if path is None:
@@ -84,6 +100,8 @@ def requested_codepoints(dictionary: Path, source: Path) -> set[int]:
     result.update(range(0x20, 0x7F))
     result.update(range(0xA0, 0x180))
     result.update(range(0x2000, 0x2070))
+    for first, last in COMMON_SYMBOL_RANGES:
+        result.update(range(first, last + 1))
     result.update({0x2190, 0x2191, 0x2192, 0x2193, 0x25A1})
     result.update(
         ord(char) for char in source.read_text(encoding="utf-8")
@@ -92,7 +110,8 @@ def requested_codepoints(dictionary: Path, source: Path) -> set[int]:
     return result
 
 
-def generate(font_path: Path, dictionary: Path,
+def generate(font_path: Path, fallback_font_paths: list[Path],
+             dictionary: Path,
              source: Path, output: Path, extra_path: Path | None,
              traditional_maps: list[Path]) -> None:
     with TTFont(font_path, lazy=True) as font:
@@ -100,6 +119,12 @@ def generate(font_path: Path, dictionary: Path,
             codepoint for codepoint in font.getBestCmap()
             if codepoint <= 0xFFFF
         }
+    for fallback_font_path in fallback_font_paths:
+        with TTFont(fallback_font_path, lazy=True) as fallback_font:
+            cmap_codepoints.update(
+                codepoint for codepoint in fallback_font.getBestCmap()
+                if codepoint <= 0xFFFF
+            )
     candidates = candidate_codepoints(dictionary)
     base = requested_codepoints(dictionary, source)
     extras = extra_codepoints(extra_path)
@@ -141,6 +166,8 @@ def main() -> int:
         description="Generate the Chinese/Latin 3DS point-font whitelist."
     )
     parser.add_argument("--font", type=Path, required=True)
+    parser.add_argument("--fallback-font", type=Path, action="append",
+                        default=[])
     parser.add_argument("--dictionary", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--extra", type=Path)
@@ -148,7 +175,8 @@ def main() -> int:
                         default=[])
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    generate(args.font, args.dictionary, args.source, args.output,
+    generate(args.font, args.fallback_font, args.dictionary,
+             args.source, args.output,
              args.extra, args.traditional_map)
     return 0
 

@@ -52,6 +52,60 @@ typedef struct {
     uint32_t debug_logging;
 } SettingsFileV3Fixture;
 
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_colorization;
+} SettingsFileV4Fixture;
+
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+} SettingsFileV5Fixture;
+
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+    uint32_t lyric_alignment;
+} SettingsFileV6Fixture;
+
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+    uint32_t lyric_alignment;
+    uint32_t play_mode;
+    uint32_t visualizer_mode;
+} SettingsFileV7Fixture;
+
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+    uint32_t lyric_alignment;
+    uint32_t play_mode;
+    uint32_t visualizer_mode;
+    uint32_t immersive_playback_mode;
+    uint32_t immersive_delay_seconds;
+} SettingsFileV8Fixture;
+
 static void write_bytes(const char *path, size_t count) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -114,11 +168,27 @@ int main(void) {
     settings_defaults(&settings);
     assert(settings.cache_limit == NM3DS_CACHE_LIMIT_DEFAULT);
     assert(settings.language == APP_LANGUAGE_CHINESE);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+    assert(settings.immersive_playback_mode == IMMERSIVE_PLAYBACK_AUTO);
+    assert(settings.immersive_delay_seconds == 10U);
+    assert(!settings.reduced_motion);
+    assert(!settings.dark_theme);
+    assert(settings.play_mode == PLAY_MODE_SEQUENCE);
+    assert(settings.visualizer_mode == VISUALIZER_SPECTRUM);
     assert(!settings.debug_logging);
     assert(settings_load(settings_path, &settings,
                          error, sizeof(error)) == 1);
     settings.cache_limit = 128 * NM3DS_CACHE_MIB;
     settings.language = APP_LANGUAGE_ENGLISH;
+    settings.control_color_mode = CONTROL_COLOR_BLACK;
+    settings.lyric_alignment = LYRIC_ALIGNMENT_LEFT;
+    settings.immersive_playback_mode = IMMERSIVE_PLAYBACK_MANUAL;
+    settings.immersive_delay_seconds = 25U;
+    settings.reduced_motion = true;
+    settings.dark_theme = true;
+    settings.play_mode = PLAY_MODE_SHUFFLE;
+    settings.visualizer_mode = VISUALIZER_NONE;
     settings.debug_logging = true;
     assert(settings_save(settings_path, &settings,
                          error, sizeof(error)) == 0);
@@ -127,6 +197,15 @@ int main(void) {
                          error, sizeof(error)) == 0);
     assert(settings.cache_limit == 128 * NM3DS_CACHE_MIB);
     assert(settings.language == APP_LANGUAGE_ENGLISH);
+    assert(settings.control_color_mode == CONTROL_COLOR_BLACK);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_LEFT);
+    assert(settings.immersive_playback_mode ==
+           IMMERSIVE_PLAYBACK_MANUAL);
+    assert(settings.immersive_delay_seconds == 25U);
+    assert(settings.reduced_motion);
+    assert(settings.dark_theme);
+    assert(settings.play_mode == PLAY_MODE_SHUFFLE);
+    assert(settings.visualizer_mode == VISUALIZER_NONE);
     assert(settings.debug_logging);
     assert(NM3DS_CACHE_LIMIT_OPTION_COUNT == 5);
     assert(cache_limit_option(NM3DS_CACHE_LIMIT_OPTION_COUNT - 1U) ==
@@ -160,6 +239,14 @@ int main(void) {
     assert(settings.cache_limit == 512 * NM3DS_CACHE_MIB);
     assert(settings.language == APP_LANGUAGE_CHINESE);
     assert(!settings.debug_logging);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+    assert(settings.play_mode == PLAY_MODE_SEQUENCE);
+    assert(settings.visualizer_mode == VISUALIZER_SPECTRUM);
+    assert(settings.immersive_playback_mode == IMMERSIVE_PLAYBACK_AUTO);
+    assert(settings.immersive_delay_seconds == 10U);
+    assert(!settings.reduced_motion);
+    assert(!settings.dark_theme);
 
     SettingsFileV2Fixture legacy_v2 = {
         {'S', 'E', 'T', 'T'}, 2, NM3DS_CACHE_LIMIT_DEFAULT,
@@ -175,6 +262,38 @@ int main(void) {
                          error, sizeof(error)) == 0);
     assert(settings.language == APP_LANGUAGE_ENGLISH);
     assert(!settings.debug_logging);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+    assert(settings.play_mode == PLAY_MODE_SEQUENCE);
+    assert(settings.visualizer_mode == VISUALIZER_SPECTRUM);
+    assert(settings.immersive_playback_mode == IMMERSIVE_PLAYBACK_AUTO);
+    assert(settings.immersive_delay_seconds == 10U);
+    assert(!settings.reduced_motion);
+
+    SettingsFileV8Fixture legacy_v8 = {
+        {'S', 'E', 'T', 'T'}, 8, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_ENGLISH, 1, CONTROL_COLOR_ADAPTIVE,
+        LYRIC_ALIGNMENT_LEFT, PLAY_MODE_REPEAT_ONE,
+        VISUALIZER_OSCILLOSCOPE,
+        IMMERSIVE_PLAYBACK_MANUAL, 30U
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(&legacy_v8, 1, sizeof(legacy_v8),
+                  legacy_settings_file) == sizeof(legacy_v8));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == 0);
+    assert(settings.language == APP_LANGUAGE_ENGLISH);
+    assert(settings.control_color_mode == CONTROL_COLOR_ADAPTIVE);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_LEFT);
+    assert(settings.play_mode == PLAY_MODE_REPEAT_ONE);
+    assert(settings.visualizer_mode == VISUALIZER_OSCILLOSCOPE);
+    assert(settings.immersive_playback_mode ==
+           IMMERSIVE_PLAYBACK_MANUAL);
+    assert(settings.immersive_delay_seconds == 30U);
+    assert(!settings.reduced_motion);
 
     SettingsFileV2Fixture invalid_settings = {
         {'S', 'E', 'T', 'T'}, 2, NM3DS_CACHE_LIMIT_DEFAULT, 99, 0
@@ -190,6 +309,85 @@ int main(void) {
     assert(settings.cache_limit == NM3DS_CACHE_LIMIT_DEFAULT);
     assert(settings.language == APP_LANGUAGE_CHINESE);
     assert(!settings.debug_logging);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+
+    SettingsFileV7Fixture invalid_visualizer = {
+        {'S', 'E', 'T', 'T'}, 7, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, CONTROL_COLOR_YELLOW,
+        LYRIC_ALIGNMENT_CENTER, PLAY_MODE_SEQUENCE, VISUALIZER_COUNT
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(
+               &invalid_visualizer, 1, sizeof(invalid_visualizer),
+               legacy_settings_file) == sizeof(invalid_visualizer));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == -1);
+    assert(settings.visualizer_mode == VISUALIZER_SPECTRUM);
+
+    SettingsFileV4Fixture invalid_colorization = {
+        {'S', 'E', 'T', 'T'}, 4, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, 2
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(
+               &invalid_colorization, 1, sizeof(invalid_colorization),
+               legacy_settings_file) == sizeof(invalid_colorization));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == -1);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
+
+    SettingsFileV6Fixture invalid_alignment = {
+        {'S', 'E', 'T', 'T'}, 6, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, CONTROL_COLOR_YELLOW,
+        LYRIC_ALIGNMENT_COUNT
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(
+               &invalid_alignment, 1, sizeof(invalid_alignment),
+               legacy_settings_file) == sizeof(invalid_alignment));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == -1);
+    assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+
+    SettingsFileV4Fixture legacy_adaptive = {
+        {'S', 'E', 'T', 'T'}, 4, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, 1
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(
+               &legacy_adaptive, 1, sizeof(legacy_adaptive),
+               legacy_settings_file) == sizeof(legacy_adaptive));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == 0);
+    assert(settings.control_color_mode == CONTROL_COLOR_ADAPTIVE);
+
+    SettingsFileV5Fixture invalid_color_mode = {
+        {'S', 'E', 'T', 'T'}, 5, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, CONTROL_COLOR_COUNT
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(
+               &invalid_color_mode, 1, sizeof(invalid_color_mode),
+               legacy_settings_file) == sizeof(invalid_color_mode));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == -1);
+    assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
 
     SettingsFileV3Fixture invalid_logging = {
         {'S', 'E', 'T', 'T'}, 3, NM3DS_CACHE_LIMIT_DEFAULT,

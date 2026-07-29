@@ -10,6 +10,19 @@ typedef struct Player Player;
 typedef struct PreparedAudio PreparedAudio;
 typedef int (*PlayerCancelFn)(void *userdata);
 
+#define PLAYER_VISUALIZER_WAVE_SAMPLES 64
+#define PLAYER_VISUALIZER_BANDS 24
+
+typedef struct {
+    float left[PLAYER_VISUALIZER_WAVE_SAMPLES];
+    float right[PLAYER_VISUALIZER_WAVE_SAMPLES];
+    float spectrum[PLAYER_VISUALIZER_BANDS];
+    float left_rms;
+    float right_rms;
+    float peak;
+    bool ready;
+} PlayerVisualizerFrame;
+
 Player *player_create(char *error, size_t error_size);
 void player_destroy(Player *player);
 bool player_is_available(const Player *player);
@@ -48,3 +61,6 @@ bool player_can_seek(const Player *player);
 bool player_finished(Player *player);
 double player_position(const Player *player);
 double player_duration(const Player *player);
+bool player_visualizer_frame(const Player *player,
+                             PlayerVisualizerFrame *frame);
+bool player_bass_level(const Player *player, float *level);

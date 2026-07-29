@@ -11,6 +11,16 @@ static int last_row_bottom(int first_y, int step, int visible_rows) {
 }
 
 int main(void) {
+    assert(search_category_page_size(SEARCH_CATEGORY_SONG) ==
+           NM3DS_MAX_RESULTS);
+    assert(search_category_page_size(SEARCH_CATEGORY_ARTIST) ==
+           NM3DS_MAX_RESULTS);
+    assert(search_category_page_size(SEARCH_CATEGORY_ALBUM) ==
+           NM3DS_MAX_RESULTS);
+    assert(search_category_page_size(SEARCH_CATEGORY_VOICE) ==
+           NM3DS_VOICE_RESULTS);
+    assert(NM3DS_VOICE_RESULTS < NM3DS_MAX_RESULTS);
+
     assert(UI_TOP_PAGE_FOOTER_X >= 0);
     assert(UI_TOP_PAGE_FOOTER_X + UI_TOP_PAGE_FOOTER_WIDTH <=
            UI_TOP_SCREEN_WIDTH);
@@ -136,6 +146,21 @@ int main(void) {
     assert(UI_SETTINGS_CACHE_Y + UI_SETTINGS_CACHE_HEIGHT <=
            UI_SETTINGS_LANGUAGE_Y);
     assert(UI_SETTINGS_LANGUAGE_Y + UI_SETTINGS_LANGUAGE_HEIGHT <=
+           UI_SETTINGS_CONTROL_COLOR_Y);
+    assert(UI_SETTINGS_CONTROL_COLOR_Y +
+               UI_SETTINGS_CONTROL_COLOR_HEIGHT <=
+           UI_SETTINGS_DARK_THEME_Y);
+    assert(UI_SETTINGS_DARK_THEME_Y +
+               UI_SETTINGS_DARK_THEME_HEIGHT <=
+           UI_SETTINGS_LYRIC_ALIGNMENT_Y);
+    assert(UI_SETTINGS_LYRIC_ALIGNMENT_Y +
+               UI_SETTINGS_LYRIC_ALIGNMENT_HEIGHT <=
+           UI_SETTINGS_IMMERSIVE_Y);
+    assert(UI_SETTINGS_IMMERSIVE_Y +
+               UI_SETTINGS_IMMERSIVE_HEIGHT <=
+           UI_SETTINGS_REDUCED_MOTION_Y);
+    assert(UI_SETTINGS_REDUCED_MOTION_Y +
+               UI_SETTINGS_REDUCED_MOTION_HEIGHT <=
            UI_SETTINGS_LIMIT_Y);
     assert(UI_SETTINGS_LIMIT_Y + UI_SETTINGS_LIMIT_HEIGHT <=
            UI_SETTINGS_DEBUG_Y);
@@ -161,7 +186,14 @@ int main(void) {
     assert(UI_SETTINGS_CONTENT_BOTTOM >
            UI_TOP_SCREEN_HEIGHT);
 
-    assert(SETTINGS_ITEM_COUNT == 8);
+    assert(SETTINGS_ITEM_COUNT == 13);
+    assert(SETTINGS_CONTROL_COLOR == SETTINGS_LANGUAGE + 1);
+    assert(SETTINGS_DARK_THEME == SETTINGS_CONTROL_COLOR + 1);
+    assert(SETTINGS_LYRIC_ALIGNMENT == SETTINGS_DARK_THEME + 1);
+    assert(SETTINGS_IMMERSIVE_PLAYBACK ==
+           SETTINGS_LYRIC_ALIGNMENT + 1);
+    assert(SETTINGS_REDUCED_MOTION ==
+           SETTINGS_IMMERSIVE_PLAYBACK + 1);
     assert(SETTINGS_CONTACT == SETTINGS_CACHE_CLEAR + 1);
     assert(SETTINGS_REPOSITORY == SETTINGS_CONTACT + 1);
     assert(SETTINGS_USAGE_NOTICE == SETTINGS_REPOSITORY + 1);
@@ -169,21 +201,24 @@ int main(void) {
     assert(settings_item_is_interactive(SETTINGS_LANGUAGE));
     assert(settings_item_is_interactive(SETTINGS_CACHE_CLEAR));
     assert(!settings_item_is_interactive(SETTINGS_VERSION));
-    assert(!settings_item_is_interactive(SETTINGS_REPOSITORY));
-    assert(!settings_item_is_interactive(SETTINGS_CONTACT));
+    assert(settings_item_is_interactive(SETTINGS_REPOSITORY));
+    assert(settings_item_is_interactive(SETTINGS_CONTACT));
     assert(!settings_item_is_interactive(SETTINGS_USAGE_NOTICE));
     assert(settings_item_is_adjustable(SETTINGS_CACHE_LIMIT));
+    assert(settings_item_is_adjustable(SETTINGS_CONTROL_COLOR));
+    assert(settings_item_is_adjustable(SETTINGS_DARK_THEME));
+    assert(settings_item_is_adjustable(SETTINGS_LYRIC_ALIGNMENT));
+    assert(settings_item_is_adjustable(SETTINGS_IMMERSIVE_PLAYBACK));
+    assert(settings_item_is_adjustable(SETTINGS_REDUCED_MOTION));
     assert(!settings_item_is_adjustable(SETTINGS_CACHE_CLEAR));
     assert(!settings_item_is_adjustable(SETTINGS_VERSION));
 
     int contact_scroll = ui_settings_scroll_offset_for_row(
         UI_SETTINGS_CONTACT_Y, UI_SETTINGS_CONTACT_HEIGHT);
     assert(contact_scroll > 0);
-    assert(UI_SETTINGS_CONTACT_Y < UI_SETTINGS_VIEW_BOTTOM);
-    assert(UI_SETTINGS_CONTACT_Y + UI_SETTINGS_CONTACT_HEIGHT >
-           UI_SETTINGS_VIEW_BOTTOM);
-    assert(ui_settings_row_is_visible(UI_SETTINGS_CONTACT_Y,
-                                      UI_SETTINGS_CONTACT_HEIGHT, 0));
+    assert(UI_SETTINGS_CLEAR_Y >= UI_SETTINGS_VIEW_BOTTOM);
+    assert(!ui_settings_row_is_visible(UI_SETTINGS_CLEAR_Y,
+                                       UI_SETTINGS_CLEAR_HEIGHT, 0));
     assert(ui_settings_row_is_visible(UI_SETTINGS_CONTACT_Y,
                                       UI_SETTINGS_CONTACT_HEIGHT,
                                       contact_scroll));

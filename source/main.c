@@ -5,7 +5,6 @@
 #include "cache.h"
 #include "diagnostic_text.h"
 #include "dsp_firmware_help.h"
-#include "immersive_lyrics.h"
 #include "media_policy.h"
 #include "media_worker.h"
 #include "i18n.h"
@@ -13,6 +12,7 @@
 #include "netease.h"
 #include "playlist.h"
 #include "player.h"
+#include "player_gesture.h"
 #include "playback_navigation.h"
 #include "playback_order.h"
 #include "prefetch_policy.h"
@@ -42,6 +42,7 @@
 #define BATTERY_STATE_POLL_MS 30000U
 #define NETWORK_STATE_POLL_MS 1000U
 #define SHELL_CLOSED_LOOP_NS 33333333LL
+#define PLAYBACK_START_DELAY_MS 1000U
 /* libctru defaults the main thread to 32 KiB.  Opening an MP3 needs roughly
  * 16 KiB of minimp3 scratch space, so keep explicit headroom for that decoder
  * and the surrounding application call chain. */
@@ -67,6 +68,36 @@ static bool submit_cache_job(AppState *app, NetworkWorker *worker,
 static void set_playing_status(AppState *app, int index);
 static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
                                      int index);
+static int64_t current_song_id(const AppState *app);
+static int save_settings_for(const AppState *app, uint64_t cache_limit,
+                             AppLanguage language, bool debug_logging,
+                             ControlColorMode control_color_mode,
+                             LyricAlignment lyric_alignment,
+                             char *error, size_t error_size);
+
+static void arm_delayed_playback(AppState *app, Player *player, int index) {
+    if (!app || !player || index < 0 ||
+        index >= (int)app->queue_count)
+        return;
+    player_set_paused(player, true);
+    app->playback_start_after_ms =
+        osGetTime() + PLAYBACK_START_DELAY_MS;
+    app->mode = APP_RESOLVING;
+    i18n_snprintf(app->status, sizeof(app->status), "正在准备播放");
+}
+
+static void update_delayed_playback(AppState *app, Player *player) {
+    if (!app || app->playback_start_after_ms == 0U) return;
+    if (!player || !player_is_active(player)) {
+        app->playback_start_after_ms = 0U;
+        return;
+    }
+    if (osGetTime() < app->playback_start_after_ms) return;
+    app->playback_start_after_ms = 0U;
+    player_set_paused(player, false);
+    app->mode = APP_PLAYING;
+    set_playing_status(app, app->current_queue);
+}
 
 static void reset_prefetch_scan(AppState *app) {
     if (!app) return;
@@ -336,6 +367,7 @@ static const char *worker_job_label(WorkerJobKind kind) {
         case WORKER_JOB_PLAYLIST_TRACKS: return "playlist_tracks";
         case WORKER_JOB_PLAYLIST_ENQUEUE: return "playlist_enqueue";
         case WORKER_JOB_ALBUM_TRACKS: return "album_tracks";
+        case WORKER_JOB_ARTIST_TRACKS: return "artist_tracks";
         case WORKER_JOB_ALBUM_ENQUEUE: return "album_enqueue";
         case WORKER_JOB_SEARCH: return "search";
         case WORKER_JOB_PREPARE_SONG: return "prepare_song";
@@ -561,6 +593,7 @@ static bool worker_kind_uses_network(const WorkerResult *result) {
         case WORKER_JOB_PLAYLIST_TRACKS:
         case WORKER_JOB_PLAYLIST_ENQUEUE:
         case WORKER_JOB_ALBUM_TRACKS:
+        case WORKER_JOB_ARTIST_TRACKS:
         case WORKER_JOB_ALBUM_ENQUEUE:
         case WORKER_JOB_SEARCH:
         case WORKER_JOB_LOGIN_QR_START:
@@ -590,6 +623,8 @@ static int request_queue_index(AppState *app, NetworkWorker *worker,
     app->queue_selected = index;
     app->pending_queue = index;
     app->extras_song_id = -1;
+    app->extras_retry_song_id = -1;
+    app->extras_retry_after_ms = 0;
     if (force_download &&
         app->audio_cached_song_id == app->queue[index].id)
         app->audio_cached_song_id = -1;
@@ -643,7 +678,7 @@ static int request_song_internal(AppState *app, PlaylistStore *store,
     reset_prefetch_scan(app);
     if (!stay_on_page) {
         app->tab = TAB_NOW_PLAYING;
-        app->focus = APP_FOCUS_PLAYLIST;
+        app->focus = APP_FOCUS_CONTENT;
     }
     return request_queue_index(app, worker, index, false);
 }
@@ -705,13 +740,45 @@ static void remove_playlist_item(AppState *app, PlaylistStore *store,
     i18n_snprintf(app->status, sizeof(app->status), "已从播放列表移除");
 }
 
+static void begin_queue_remove_prompt(AppState *app) {
+    if (!app) return;
+    int index = app->queue_selected;
+    if (index < 0 || index >= (int)app->queue_count) return;
+    app->queue_remove_index = index;
+    app->queue_remove_song = app->queue[index];
+    app->queue_remove_confirm_choice = 0;
+    app->queue_remove_confirm = true;
+}
+
+static void finish_queue_remove_prompt(
+    AppState *app, PlaylistStore *store, Ui *ui, Player *player,
+    NetworkWorker *worker, MediaWorker *media, bool confirmed) {
+    if (!app || !app->queue_remove_confirm) return;
+    int index = app->queue_remove_index;
+    int64_t song_id = app->queue_remove_song.id;
+    app->queue_remove_confirm = false;
+    app->queue_remove_index = -1;
+    app->queue_remove_confirm_choice = -1;
+    memset(&app->queue_remove_song, 0, sizeof(app->queue_remove_song));
+    if (!confirmed) {
+        i18n_snprintf(app->status, sizeof(app->status), "已取消删除");
+        return;
+    }
+    if (index < 0 || index >= (int)app->queue_count ||
+        app->queue[index].id != song_id) {
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "播放列表已变化，请重新选择");
+        return;
+    }
+    app->queue_selected = index;
+    remove_playlist_item(app, store, ui, player, worker, media);
+}
+
 static void toggle_pause(AppState *app, Player *player) {
     if (!player_is_active(player)) return;
     player_toggle_pause(player);
     app->mode = player_is_paused(player) ? APP_PAUSED :
                 player_is_buffering(player) ? APP_BUFFERING : APP_PLAYING;
-    i18n_snprintf(app->status, sizeof(app->status), "%s",
-             player_is_paused(player) ? "已暂停" : "已继续播放");
 }
 
 static void cycle_play_mode(AppState *app, PlaylistStore *store) {
@@ -723,11 +790,26 @@ static void cycle_play_mode(AppState *app, PlaylistStore *store) {
         playlist_persistence_error(app, error);
         return;
     }
-    static const char *modes[PLAY_MODE_COUNT] = {
-        "顺序播放", "单曲循环", "随机播放"
-    };
-    i18n_snprintf(app->status, sizeof(app->status), "模式：%s",
-             i18n_text(modes[app->play_mode]));
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0)
+        show_error(app, error);
+}
+
+static void cycle_visualizer_mode(AppState *app) {
+    if (!app) return;
+    VisualizerMode previous = app->visualizer_mode;
+    app->visualizer_mode =
+        (VisualizerMode)((previous + 1) % VISUALIZER_COUNT);
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0) {
+        app->visualizer_mode = previous;
+        show_error(app, error);
+    }
 }
 
 static bool confirm_exit(AppState *app) {
@@ -829,6 +911,21 @@ static void move_queue_page(AppState *app, int direction) {
         direction, selectable);
 }
 
+static void move_queue_item(AppState *app, PlaylistStore *store,
+                            int direction) {
+    if (!app || !store || app->focus != APP_FOCUS_PLAYLIST ||
+        app->queue_selected < 0 ||
+        app->queue_selected >= (int)app->queue_count)
+        return;
+    char error[192] = {0};
+    int result = playlist_store_move(
+        store, app, app->queue_selected, direction,
+        osGetTime(), error, sizeof(error));
+    if (result < 0)
+        playlist_persistence_error(
+            app, error[0] ? error : i18n_text("播放列表日志不可用"));
+}
+
 static void move_discover_home(AppState *app, int dx, int dy) {
     if (!app || app->discover_section != DISCOVER_HOME) return;
     app->discover_home_selected = navigation_grid_move(
@@ -843,15 +940,11 @@ static void move_recommendation_source(AppState *app, int dx) {
 }
 
 static void toggle_screen_focus(AppState *app) {
-    if (!app || (app->tab == TAB_NOW_PLAYING && !app->album_open)) return;
+    if (!app) return;
     if (app->focus == APP_FOCUS_PLAYLIST) {
         app->focus = APP_FOCUS_CONTENT;
-        i18n_snprintf(app->status, sizeof(app->status),
-                 "已切换到上屏控制");
     } else if (queue_has_selectable_item(app)) {
         app->focus = APP_FOCUS_PLAYLIST;
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "播放列表控制");
     } else {
         i18n_snprintf(app->status, sizeof(app->status),
                  "播放列表为空");
@@ -1041,7 +1134,11 @@ static void load_library_tracks(AppState *app, NetworkWorker *worker,
 static void reset_album(AppState *app) {
     if (!app) return;
     app->album_open = false;
+    app->album_return_to_search = false;
+    app->album_return_to_coverflow = false;
+    app->album_is_artist = false;
     app->album_id = 0;
+    app->album_artist_id = 0;
     app->album_source_song_id = 0;
     app->album_name[0] = '\0';
     app->album_track_count = 0;
@@ -1054,25 +1151,141 @@ static void reset_album(AppState *app) {
 
 static void close_album(AppState *app) {
     if (!app || !app->album_open) return;
+    bool return_to_search = app->album_return_to_search;
+    bool return_to_coverflow = app->album_return_to_coverflow;
     reset_album(app);
-    app->focus = APP_FOCUS_PLAYLIST;
-    i18n_snprintf(app->status, sizeof(app->status), "已返回正在播放");
+    if (return_to_search) {
+        app->tab = TAB_DISCOVER;
+        app->discover_section = DISCOVER_SEARCH;
+        app->focus = APP_FOCUS_CONTENT;
+        i18n_snprintf(app->status, sizeof(app->status), "已返回搜索结果");
+    } else if (return_to_coverflow) {
+        app->tab = TAB_NOW_PLAYING;
+        app->focus = APP_FOCUS_CONTENT;
+        app->coverflow_open = true;
+    } else {
+        app->focus = APP_FOCUS_PLAYLIST;
+        i18n_snprintf(app->status, sizeof(app->status), "已返回正在播放");
+    }
+}
+
+static void build_coverflow(AppState *app) {
+    if (!app) return;
+    app->coverflow_count = 0;
+    app->coverflow_selected = 0;
+    for (size_t queue_index = 0;
+         queue_index < app->queue_count &&
+         app->coverflow_count < NM3DS_MAX_COVERFLOW_ALBUMS;
+         queue_index++) {
+        const Song *song = &app->queue[queue_index];
+        const char *album = song->album[0] ?
+            song->album : i18n_text("未知专辑");
+        size_t album_index = 0;
+        for (; album_index < app->coverflow_count; album_index++)
+            if (strcmp(app->coverflow_albums[album_index].album,
+                       album) == 0)
+                break;
+        if (album_index == app->coverflow_count) {
+            CoverFlowAlbum *entry =
+                &app->coverflow_albums[app->coverflow_count++];
+            memset(entry, 0, sizeof(*entry));
+            i18n_snprintf(entry->album, sizeof(entry->album),
+                          "%s", album);
+            i18n_snprintf(entry->artist, sizeof(entry->artist),
+                          "%s", song->artist);
+            entry->representative_queue = (int)queue_index;
+        }
+        app->coverflow_albums[album_index].track_count++;
+        if ((int)queue_index == app->current_queue)
+            app->coverflow_selected = (int)album_index;
+    }
+}
+
+static void open_coverflow(AppState *app) {
+    if (!app || app->queue_count == 0) return;
+    build_coverflow(app);
+    if (app->coverflow_count == 0) return;
+    app->coverflow_open = true;
+    app->tab = TAB_NOW_PLAYING;
+    app->focus = APP_FOCUS_CONTENT;
+    app->immersive_active = false;
+}
+
+static void step_coverflow(AppState *app, int direction) {
+    if (!app || app->coverflow_count == 0 || direction == 0)
+        return;
+    int count = (int)app->coverflow_count;
+    int selected = (app->coverflow_selected + direction) % count;
+    if (selected < 0) selected += count;
+    app->coverflow_selected = selected;
+}
+
+static void open_queue_album(AppState *app, NetworkWorker *worker,
+                             int queue_index, bool return_to_coverflow) {
+    if (!app || !worker || queue_index < 0 ||
+        queue_index >= (int)app->queue_count)
+        return;
+    if (!app->network_online) {
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "Wi-Fi 未连接，无法查看专辑");
+        return;
+    }
+    if (network_task_busy(worker)) {
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "当前任务尚未完成");
+        return;
+    }
+    Song song = app->queue[queue_index];
+    reset_album(app);
+    app->album_open = true;
+    app->album_return_to_coverflow = return_to_coverflow;
+    app->album_source_song_id = song.id;
+    i18n_snprintf(app->album_name, sizeof(app->album_name), "%s",
+                  song.album);
+    app->coverflow_open = false;
+    app->tab = TAB_NOW_PLAYING;
+    app->focus = APP_FOCUS_CONTENT;
+    app->account_open = false;
+    WorkerJob job;
+    memset(&job, 0, sizeof(job));
+    job.kind = WORKER_JOB_ALBUM_TRACKS;
+    job.song = song;
+    if (network_worker_submit(worker, &job)) {
+        app->mode = APP_LOADING_ALBUM;
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "正在查询完整专辑歌曲列表");
+    } else {
+        bool restore_coverflow = app->album_return_to_coverflow;
+        reset_album(app);
+        app->coverflow_open = restore_coverflow;
+        show_error(app, "无法启动专辑任务");
+    }
 }
 
 static bool submit_album_page(AppState *app, NetworkWorker *worker,
                               size_t offset, int selected) {
-    if (!app || !worker || app->album_id <= 0) return false;
+    if (!app || !worker ||
+        (app->album_is_artist ?
+            app->album_artist_id <= 0 : app->album_id <= 0))
+        return false;
     WorkerJob job;
     memset(&job, 0, sizeof(job));
-    job.kind = WORKER_JOB_ALBUM_TRACKS;
-    job.album_id = app->album_id;
+    if (app->album_is_artist) {
+        job.kind = WORKER_JOB_ARTIST_TRACKS;
+        job.artist_id = app->album_artist_id;
+    } else {
+        job.kind = WORKER_JOB_ALBUM_TRACKS;
+        job.album_id = app->album_id;
+    }
     job.offset = offset;
     if (!network_worker_submit(worker, &job)) return false;
     app->album_track_count = 0;
     app->album_track_pending_selected = selected;
     app->mode = APP_LOADING_ALBUM;
     i18n_snprintf(app->status, sizeof(app->status),
-                  "正在读取专辑歌曲 · 第 %u 页",
+                  app->album_is_artist ?
+                      "正在读取歌手歌曲 · 第 %u 页" :
+                      "正在读取专辑歌曲 · 第 %u 页",
                   (unsigned int)(offset / NM3DS_ALBUM_PAGE + 1));
     return true;
 }
@@ -1105,56 +1318,6 @@ static void move_album_selection(AppState *app, NetworkWorker *worker,
         return;
     }
     move_album_page(app, worker, delta);
-}
-
-static void open_current_album(AppState *app, NetworkWorker *worker) {
-    if (!app || !worker) return;
-    if (app->album_open) {
-        WorkerSnapshot snapshot;
-        network_worker_snapshot(worker, &snapshot);
-        if (snapshot.busy && snapshot.kind == WORKER_JOB_ALBUM_TRACKS)
-            network_worker_cancel(worker);
-        close_album(app);
-        return;
-    }
-    if (app->current_queue < 0 ||
-        app->current_queue >= (int)app->queue_count) {
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "没有可查看的当前歌曲");
-        return;
-    }
-    if (!app->network_online) {
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "Wi-Fi 未连接，无法查看专辑");
-        return;
-    }
-    if (network_task_busy(worker)) {
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "当前任务尚未完成");
-        return;
-    }
-    Song song = app->queue[app->current_queue];
-    reset_album(app);
-    app->album_open = true;
-    app->album_source_song_id = song.id;
-    i18n_snprintf(app->album_name, sizeof(app->album_name), "%s",
-                  song.album);
-    app->tab = TAB_NOW_PLAYING;
-    app->focus = APP_FOCUS_CONTENT;
-    app->account_open = false;
-    WorkerJob job;
-    memset(&job, 0, sizeof(job));
-    job.kind = WORKER_JOB_ALBUM_TRACKS;
-    job.song = song;
-    if (network_worker_submit(worker, &job)) {
-        app->mode = APP_LOADING_ALBUM;
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "正在查询完整专辑歌曲列表");
-    } else {
-        reset_album(app);
-        app->focus = APP_FOCUS_PLAYLIST;
-        show_error(app, "无法启动专辑任务");
-    }
 }
 
 static bool worker_job_is_bulk_enqueue(WorkerJobKind kind) {
@@ -1419,6 +1582,7 @@ static void perform_search(AppState *app, NetworkWorker *worker,
     memset(&job, 0, sizeof(job));
     job.kind = WORKER_JOB_SEARCH;
     i18n_snprintf(job.query, sizeof(job.query), "%s", query);
+    job.search_category = app->search_category;
     job.offset = offset;
     if (!network_worker_submit(worker, &job)) {
         show_error(app, "无法启动搜索任务");
@@ -1437,9 +1601,88 @@ static void perform_search(AppState *app, NetworkWorker *worker,
     app->discover_section = DISCOVER_SEARCH;
     app->focus = APP_FOCUS_CONTENT;
     app->mode = APP_SEARCHING;
+    size_t page_size = search_category_page_size(app->search_category);
     i18n_snprintf(app->status, sizeof(app->status),
                   "搜索中 · 第 %u 页",
-                  (unsigned int)(offset / NM3DS_MAX_RESULTS + 1));
+                  (unsigned int)(offset / page_size + 1));
+}
+
+static const char *search_category_name(SearchCategory category) {
+    static const char *names[SEARCH_CATEGORY_COUNT] = {
+        "歌曲", "歌手", "专辑", "声音"
+    };
+    return (unsigned int)category < SEARCH_CATEGORY_COUNT ?
+           names[category] : names[SEARCH_CATEGORY_SONG];
+}
+
+static void select_search_category(AppState *app, NetworkWorker *worker,
+                                   SearchCategory category) {
+    if (!app || !worker || !app->query[0] ||
+        app->search_page.loading || network_task_busy(worker))
+        return;
+    if ((unsigned int)category >= SEARCH_CATEGORY_COUNT ||
+        category == app->search_category)
+        return;
+    app->search_category = category;
+    app->search_count = 0;
+    app->search_selected = 0;
+    app->search_has_more = false;
+    search_page_reset(&app->search_page);
+    perform_search(app, worker, app->query, 0);
+}
+
+static void change_search_category(AppState *app, NetworkWorker *worker,
+                                   int delta) {
+    if (!app) return;
+    int category = (int)app->search_category + delta;
+    if (category < 0) category = SEARCH_CATEGORY_COUNT - 1;
+    if (category >= SEARCH_CATEGORY_COUNT) category = 0;
+    select_search_category(app, worker, (SearchCategory)category);
+}
+
+static void open_search_album(AppState *app, NetworkWorker *worker) {
+    if (!app || !worker ||
+        app->search_category != SEARCH_CATEGORY_ALBUM ||
+        app->search_selected < 0 ||
+        (size_t)app->search_selected >= app->search_count)
+        return;
+    const NeteaseSearchItem *album =
+        &app->search_items[app->search_selected];
+    if (album->id <= 0 || network_task_busy(worker)) return;
+    reset_album(app);
+    app->album_open = true;
+    app->album_return_to_search = true;
+    app->album_id = album->id;
+    i18n_snprintf(app->album_name, sizeof(app->album_name), "%s",
+                  album->title);
+    app->focus = APP_FOCUS_CONTENT;
+    if (!submit_album_page(app, worker, 0, 0)) {
+        reset_album(app);
+        show_error(app, "无法加载搜索到的专辑");
+    }
+}
+
+static void open_search_artist(AppState *app, NetworkWorker *worker) {
+    if (!app || !worker ||
+        app->search_category != SEARCH_CATEGORY_ARTIST ||
+        app->search_selected < 0 ||
+        (size_t)app->search_selected >= app->search_count)
+        return;
+    const NeteaseSearchItem *artist =
+        &app->search_items[app->search_selected];
+    if (artist->id <= 0 || network_task_busy(worker)) return;
+    reset_album(app);
+    app->album_open = true;
+    app->album_return_to_search = true;
+    app->album_is_artist = true;
+    app->album_artist_id = artist->id;
+    i18n_snprintf(app->album_name, sizeof(app->album_name), "%s",
+                  artist->title);
+    app->focus = APP_FOCUS_CONTENT;
+    if (!submit_album_page(app, worker, 0, 0)) {
+        reset_album(app);
+        show_error(app, "无法加载搜索到的歌手");
+    }
 }
 
 static void start_login_qr(AppState *app, Ui *ui, NetworkWorker *worker) {
@@ -1474,8 +1717,8 @@ static bool submit_account_check(AppState *app, NetworkWorker *worker) {
     WorkerJob job;
     memset(&job, 0, sizeof(job));
     job.kind = WORKER_JOB_ACCOUNT;
+    app->account_verified = false;
     if (!network_worker_submit(worker, &job)) return false;
-    i18n_snprintf(app->status, sizeof(app->status), "正在验证登录");
     return true;
 }
 
@@ -1487,7 +1730,7 @@ static void begin_search_input(AppState *app, Ui *ui, Player *player) {
     ui_draw_once(ui, app, player);
     if (!ui_ime_begin(ui, app->query))
         i18n_snprintf(app->status, sizeof(app->status),
-                 "拼音词典不可用，已启用英文输入");
+                 "拼音词典不可用，请使用系统键盘");
     diagnostic_log(app, "ime_open", player);
 }
 
@@ -1506,7 +1749,10 @@ static const Song *selected_song(const AppState *app) {
             return &app->discover[app->discover_selected];
     }
     if (app->tab == TAB_DISCOVER &&
-        app->discover_section == DISCOVER_SEARCH && app->search_count > 0)
+        app->discover_section == DISCOVER_SEARCH &&
+        (app->search_category == SEARCH_CATEGORY_SONG ||
+         app->search_category == SEARCH_CATEGORY_VOICE) &&
+        app->search_count > 0)
         return &app->search[app->search_selected];
     return NULL;
 }
@@ -1533,21 +1779,120 @@ static void change_tab(AppState *app, NetworkWorker *worker,
     }
     int tab = ((int)app->tab + delta + TAB_COUNT) % TAB_COUNT;
     app->tab = (AppTab)tab;
-    app->focus = app->tab == TAB_NOW_PLAYING ?
-                 APP_FOCUS_PLAYLIST : APP_FOCUS_CONTENT;
+    app->focus = APP_FOCUS_CONTENT;
     app->account_open = false;
     app->login_continuation = LOGIN_CONTINUATION_NONE;
     if (app->tab == TAB_DISCOVER) app->discover_section = DISCOVER_HOME;
-    if (app->tab == TAB_SETTINGS && worker &&
-        !network_task_busy(worker) &&
-        submit_cache_job(app, worker, WORKER_JOB_CACHE_SCAN))
-        i18n_snprintf(app->status, sizeof(app->status),
-                      "正在扫描媒体缓存");
     if (app->tab == TAB_NOW_PLAYING && app->pending_queue < 0 &&
         app->current_queue >= 0 &&
-        app->current_queue < (int)app->queue_count)
+        app->current_queue < (int)app->queue_count &&
+        app->lyric_song_id != app->queue[app->current_queue].id)
         maybe_submit_song_extras(app, worker, app->current_queue);
     (void)network_ready;
+}
+
+static void activate_player_play_pause(
+    AppState *app, PlaylistStore *store, Player *player,
+    NetworkWorker *worker, bool network_ready) {
+    if (app->playback_start_after_ms != 0U) {
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "正在准备播放");
+    } else if (player_is_active(player)) {
+        toggle_pause(app, player);
+    } else if (app->pending_queue >= 0 &&
+               app->pending_queue < (int)app->queue_count) {
+        i18n_snprintf(app->status, sizeof(app->status),
+                      "正在准备播放");
+    } else if (queue_has_selectable_item(app)) {
+        (void)request_queue_index(app, worker,
+                                  app->queue_selected, false);
+    } else if (network_ready && app->network_online) {
+        const Song *song = selected_song(app);
+        if (song)
+            (void)request_selected_song(app, store, worker, song);
+    }
+}
+
+static void execute_player_gesture(
+    PlayerGestureAction action, AppState *app, PlaylistStore *store,
+    Player *player, NetworkWorker *worker, bool network_ready) {
+    switch (action) {
+        case PLAYER_GESTURE_PLAY_PAUSE:
+            activate_player_play_pause(
+                app, store, player, worker, network_ready);
+            break;
+        case PLAYER_GESTURE_NEXT:
+            play_next(app, worker);
+            break;
+        case PLAYER_GESTURE_PREVIOUS:
+            play_previous(app, worker);
+            break;
+        case PLAYER_GESTURE_NONE:
+        default:
+            break;
+    }
+}
+
+static bool immersive_context_ready(const AppState *app,
+                                    const Player *player) {
+    return app && player && app->tab == TAB_NOW_PLAYING &&
+           app->focus == APP_FOCUS_CONTENT && !app->album_open &&
+           !app->coverflow_open && !app->account_open &&
+           !app->dsp_firmware_prompt_open &&
+           !app->network_certificate_prompt_open &&
+           !app->queue_replace_confirm && !app->queue_remove_confirm &&
+           !app->bulk_enqueue_confirm &&
+           !app->bulk_enqueue_active && player_is_active(player) &&
+           !player_is_paused(player) && current_song_id(app) > 0;
+}
+
+static void reset_immersive_idle(AppState *app, uint64_t now_ms) {
+    if (!app) return;
+    app->immersive_idle_since_ms = now_ms;
+    app->immersive_idle_song_id = current_song_id(app);
+}
+
+static void enter_immersive(AppState *app, uint64_t now_ms) {
+    if (!app) return;
+    app->immersive_active = true;
+    /* Pressing Y physically rocks a real 3DS a little. Do not sample the
+     * gyro until that input impulse has completely settled. */
+    app->immersive_gyro_ready_ms = now_ms + 2000U;
+}
+
+static void update_auto_immersive(AppState *app, const Player *player,
+                                  uint64_t now_ms) {
+    if (!app || !player) return;
+    if (!immersive_context_ready(app, player) ||
+        app->immersive_playback_mode != IMMERSIVE_PLAYBACK_AUTO) {
+        reset_immersive_idle(app, now_ms);
+        return;
+    }
+    int64_t song_id = current_song_id(app);
+    if (app->immersive_idle_song_id != song_id ||
+        app->immersive_idle_since_ms == 0U)
+        reset_immersive_idle(app, now_ms);
+    if (!app->immersive_active &&
+        now_ms - app->immersive_idle_since_ms >=
+            (uint64_t)app->immersive_delay_seconds * 1000U)
+        enter_immersive(app, now_ms);
+}
+
+static bool immersive_gyro_shaken(bool gyro_ready, uint64_t now_ms,
+                                  uint64_t ready_ms) {
+    if (!gyro_ready || now_ms < ready_ms) return false;
+    angularRate rate = {0};
+    hidGyroRead(&rate);
+    int x = abs((int)rate.x);
+    int y = abs((int)rate.y);
+    int z = abs((int)rate.z);
+    int magnitude = x + y + z;
+    int peak = x > y ? x : y;
+    if (z > peak) peak = z;
+    /* The former threshold (180) also caught the tiny rotational impulse
+     * from pressing a face button. A real shake has both a strong peak axis
+     * and substantially more combined angular velocity. */
+    return peak >= 320 && magnitude >= 850;
 }
 
 static void handle_player_touch(AppState *app, PlaylistStore *store,
@@ -1563,19 +1908,8 @@ static void handle_player_touch(AppState *app, PlaylistStore *store,
             play_previous(app, worker);
             break;
         case UI_PLAYER_TOUCH_PLAY_PAUSE:
-            if (player_is_active(player)) toggle_pause(app, player);
-            else if (app->pending_queue >= 0 &&
-                     app->pending_queue < (int)app->queue_count)
-                i18n_snprintf(app->status, sizeof(app->status),
-                              "正在准备播放");
-            else if (queue_has_selectable_item(app))
-                (void)request_queue_index(app, worker,
-                                          app->queue_selected, false);
-            else if (network_ready && app->network_online) {
-                const Song *song = selected_song(app);
-                if (song)
-                    (void)request_selected_song(app, store, worker, song);
-            }
+            activate_player_play_pause(
+                app, store, player, worker, network_ready);
             break;
         case UI_PLAYER_TOUCH_NEXT:
             play_next(app, worker);
@@ -1583,8 +1917,12 @@ static void handle_player_touch(AppState *app, PlaylistStore *store,
         case UI_PLAYER_TOUCH_PLAY_MODE:
             cycle_play_mode(app, store);
             break;
+        case UI_PLAYER_TOUCH_VISUALIZER: {
+            cycle_visualizer_mode(app);
+            break;
+        }
         case UI_PLAYER_TOUCH_ALBUM:
-            open_current_album(app, worker);
+            open_coverflow(app);
             break;
         case UI_PLAYER_TOUCH_SEEK:
             if (player_can_seek(player)) {
@@ -1605,8 +1943,6 @@ static void handle_player_touch(AppState *app, PlaylistStore *store,
             break;
         case UI_PLAYER_TOUCH_PLAYLIST_FOCUS:
             app->focus = APP_FOCUS_PLAYLIST;
-            i18n_snprintf(app->status, sizeof(app->status),
-                          "播放列表控制");
             break;
         case UI_PLAYER_TOUCH_NONE:
         default:
@@ -1643,6 +1979,10 @@ static void validate_open_album_song(AppState *app) {
     if (!app || !app->album_open || app->current_queue < 0 ||
         app->current_queue >= (int)app->queue_count)
         return;
+    if (app->album_return_to_search ||
+        app->album_return_to_coverflow ||
+        app->album_is_artist)
+        return;
     if (app->bulk_enqueue_kind == BULK_ENQUEUE_ALBUM &&
         (app->bulk_enqueue_confirm || app->bulk_enqueue_active))
         return;
@@ -1663,6 +2003,7 @@ static void apply_cache_stats(AppState *app, const WorkerResult *result) {
     app->cache_audio_files = result->cache_audio_files;
     app->cache_cover_files = result->cache_cover_files;
     app->cache_lyric_files = result->cache_lyric_files;
+    app->cache_stats_valid = true;
 }
 
 static void apply_queue_cache_check(AppState *app,
@@ -1695,6 +2036,7 @@ static void apply_media_cache_stats(AppState *app, const MediaResult *result) {
     app->cache_audio_files = result->cache_audio_files;
     app->cache_cover_files = result->cache_cover_files;
     app->cache_lyric_files = result->cache_lyric_files;
+    app->cache_stats_valid = true;
 }
 
 static void apply_song_catalog_fee(AppState *app, PlaylistStore *store,
@@ -1733,13 +2075,21 @@ static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
     if (!app || !worker || index < 0 || index >= (int)app->queue_count)
         return;
     int64_t song_id = app->queue[index].id;
-    if (app->extras_song_id == song_id || network_task_busy(worker)) return;
+    uint64_t now_ms = osGetTime();
+    if (app->extras_song_id == song_id || network_task_busy(worker) ||
+        (app->extras_retry_song_id == song_id &&
+         now_ms < app->extras_retry_after_ms))
+        return;
     WorkerJob job;
     memset(&job, 0, sizeof(job));
     job.kind = WORKER_JOB_SONG_EXTRAS;
     job.song = app->queue[index];
     job.offline_playback = !app->network_online;
-    if (network_worker_submit(worker, &job)) app->extras_song_id = song_id;
+    if (network_worker_submit(worker, &job)) {
+        app->extras_song_id = song_id;
+        app->extras_retry_song_id = -1;
+        app->extras_retry_after_ms = 0;
+    }
 }
 
 static void maybe_submit_song_prefetch(AppState *app, Player *player,
@@ -1876,12 +2226,22 @@ static void maybe_submit_background_storage_scan(
 
 static int save_settings_for(const AppState *app, uint64_t cache_limit,
                              AppLanguage language, bool debug_logging,
+                             ControlColorMode control_color_mode,
+                             LyricAlignment lyric_alignment,
                              char *error, size_t error_size) {
     if (!app) return -1;
     AppSettings settings = {
         .cache_limit = cache_limit,
         .language = language,
         .debug_logging = debug_logging,
+        .control_color_mode = control_color_mode,
+        .lyric_alignment = lyric_alignment,
+        .immersive_playback_mode = app->immersive_playback_mode,
+        .immersive_delay_seconds = app->immersive_delay_seconds,
+        .reduced_motion = app->reduced_motion,
+        .dark_theme = app->dark_theme,
+        .play_mode = app->play_mode,
+        .visualizer_mode = app->visualizer_mode,
     };
     return settings_save(SETTINGS_PATH, &settings, error, error_size);
 }
@@ -1892,6 +2252,8 @@ static void apply_language(AppState *app, AppLanguage language) {
         return;
     char error[192];
     if (save_settings_for(app, app->cache_limit, language, app->debug_logging,
+                          app->control_color_mode,
+                          app->lyric_alignment,
                           error, sizeof(error)) != 0) {
         show_error(app, error);
         return;
@@ -1913,6 +2275,8 @@ static void apply_debug_logging(AppState *app, bool enabled,
     }
     char error[192];
     if (save_settings_for(app, app->cache_limit, app->language, enabled,
+                          app->control_color_mode,
+                          app->lyric_alignment,
                           error, sizeof(error)) != 0) {
         show_error(app, error);
         return;
@@ -1922,6 +2286,120 @@ static void apply_debug_logging(AppState *app, bool enabled,
         diagnostic_log(app, "debug_logging_enabled", player);
     i18n_snprintf(app->status, sizeof(app->status), enabled ?
                   "调试日志已开启" : "调试日志已关闭");
+}
+
+static const char *control_color_status(ControlColorMode mode) {
+    switch (mode) {
+        case CONTROL_COLOR_BLACK:
+            return "控件已改为单色深灰";
+        case CONTROL_COLOR_ADAPTIVE:
+            return "控件已改为跟随背景";
+        case CONTROL_COLOR_YELLOW:
+        default:
+            return "控件已改为单色黄色";
+    }
+}
+
+static void apply_control_color_mode(AppState *app, ControlColorMode mode) {
+    if (!app) return;
+    if (mode >= CONTROL_COLOR_COUNT)
+        return;
+    if (mode == app->control_color_mode) {
+        i18n_snprintf(app->status, sizeof(app->status), "%s",
+                      control_color_status(mode));
+        return;
+    }
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            mode, app->lyric_alignment, error, sizeof(error)) != 0) {
+        show_error(app, error);
+        return;
+    }
+    app->control_color_mode = mode;
+    i18n_snprintf(app->status, sizeof(app->status), "%s",
+                  control_color_status(mode));
+}
+
+static void apply_lyric_alignment(AppState *app, LyricAlignment alignment) {
+    if (!app || alignment >= LYRIC_ALIGNMENT_COUNT) return;
+    if (alignment == app->lyric_alignment) return;
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, alignment,
+            error, sizeof(error)) != 0) {
+        show_error(app, error);
+        return;
+    }
+    app->lyric_alignment = alignment;
+    i18n_snprintf(
+        app->status, sizeof(app->status), "%s",
+        alignment == LYRIC_ALIGNMENT_LEFT ?
+            "歌词已改为靠左" : "歌词已改为居中");
+}
+
+static void apply_immersive_playback(
+    AppState *app, ImmersivePlaybackMode mode, uint32_t seconds) {
+    if (!app || mode > IMMERSIVE_PLAYBACK_MANUAL) return;
+    if (seconds < 5U) seconds = 5U;
+    if (seconds > 60U) seconds = 60U;
+    if (mode == app->immersive_playback_mode &&
+        seconds == app->immersive_delay_seconds)
+        return;
+    ImmersivePlaybackMode old_mode = app->immersive_playback_mode;
+    uint32_t old_seconds = app->immersive_delay_seconds;
+    app->immersive_playback_mode = mode;
+    app->immersive_delay_seconds = seconds;
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0) {
+        app->immersive_playback_mode = old_mode;
+        app->immersive_delay_seconds = old_seconds;
+        show_error(app, error);
+        return;
+    }
+    reset_immersive_idle(app, osGetTime());
+}
+
+static void apply_reduced_motion(AppState *app, bool enabled) {
+    if (!app || app->reduced_motion == enabled) return;
+    bool previous = app->reduced_motion;
+    app->reduced_motion = enabled;
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0) {
+        app->reduced_motion = previous;
+        show_error(app, error);
+        return;
+    }
+    i18n_snprintf(
+        app->status, sizeof(app->status), "%s",
+        i18n_text(enabled ? "低动态效果已开启" :
+                            "低动态效果已关闭"));
+}
+
+static void apply_dark_theme(AppState *app, bool enabled) {
+    if (!app || app->dark_theme == enabled) return;
+    bool previous = app->dark_theme;
+    app->dark_theme = enabled;
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0) {
+        app->dark_theme = previous;
+        show_error(app, error);
+        return;
+    }
+    i18n_snprintf(
+        app->status, sizeof(app->status), "%s",
+        i18n_text(enabled ? "深色模式已开启" :
+                            "深色模式已关闭"));
 }
 
 static void apply_selected_cache_limit(AppState *app, NetworkWorker *worker) {
@@ -1959,6 +2437,8 @@ static void apply_selected_cache_limit(AppState *app, NetworkWorker *worker) {
     }
     char error[192];
     if (save_settings_for(app, limit, app->language, app->debug_logging,
+                          app->control_color_mode,
+                          app->lyric_alignment,
                           error, sizeof(error)) != 0) {
         show_error(app, error);
         return;
@@ -2084,6 +2564,11 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
     if (result->cancelled) {
         if (result->kind == WORKER_JOB_SEARCH)
             search_page_cancel(&app->search_page);
+        if (result->kind == WORKER_JOB_ACCOUNT) {
+            app->account_verified = false;
+            app->status[0] = '\0';
+            return;
+        }
         if (worker_job_is_bulk_enqueue(result->kind)) {
             app->bulk_enqueue_active = false;
             app->bulk_enqueue_kind = BULK_ENQUEUE_NONE;
@@ -2098,13 +2583,21 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
         }
         if (result->kind == WORKER_JOB_SONG_EXTRAS) {
             app->extras_song_id = -1;
+            app->extras_retry_song_id = result->song_id;
+            app->extras_retry_after_ms = osGetTime() + 1200U;
+            app->mode = player_is_buffering(player) ? APP_BUFFERING :
+                        player_is_paused(player) ? APP_PAUSED :
+                        player_is_active(player) ? APP_PLAYING : APP_IDLE;
             return;
         }
-        if (result->kind == WORKER_JOB_ALBUM_TRACKS) {
+        if (result->kind == WORKER_JOB_ALBUM_TRACKS ||
+            result->kind == WORKER_JOB_ARTIST_TRACKS) {
             app->mode = player_is_active(player) ? APP_PLAYING : APP_IDLE;
             if (app->album_open)
                 i18n_snprintf(app->status, sizeof(app->status),
-                              "已取消加载专辑");
+                              app->album_is_artist ?
+                                  "已取消加载歌手歌曲" :
+                                  "已取消加载专辑");
             return;
         }
         app->pending_queue = -1;
@@ -2130,11 +2623,17 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
         }
         if (result->kind == WORKER_JOB_SONG_EXTRAS) {
             app->extras_song_id = -1;
+            app->extras_retry_song_id = result->song_id;
+            app->extras_retry_after_ms = osGetTime() + 3000U;
             if (app->extras_cached_song_id == result->song_id)
                 app->extras_cached_song_id = -1;
+            app->mode = player_is_buffering(player) ? APP_BUFFERING :
+                        player_is_paused(player) ? APP_PAUSED :
+                        player_is_active(player) ? APP_PLAYING : APP_IDLE;
             return;
         }
-        if (result->kind == WORKER_JOB_ALBUM_TRACKS) {
+        if (result->kind == WORKER_JOB_ALBUM_TRACKS ||
+            result->kind == WORKER_JOB_ARTIST_TRACKS) {
             if (!app->album_open) {
                 app->mode = player_is_active(player) ? APP_PLAYING : APP_IDLE;
                 return;
@@ -2142,7 +2641,8 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             app->mode = APP_ERROR;
             i18n_snprintf(app->status, sizeof(app->status), "%s",
                           result->error[0] ? result->error :
-                                             i18n_text("专辑加载失败"));
+                              i18n_text(app->album_is_artist ?
+                                  "歌手歌曲加载失败" : "专辑加载失败"));
             return;
         }
         app->pending_queue = -1;
@@ -2178,6 +2678,7 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 }
             }
         if (result->kind == WORKER_JOB_ACCOUNT) {
+            app->account_verified = false;
             if (auth_should_clear_after_validation(result->failure)) {
                 auth_clear(client, AUTH_PATH);
                 app->logged_in = false;
@@ -2186,18 +2687,8 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 reset_discover(app);
                 reset_library(app);
                 begin_queue_cache_scan(app, true);
-                i18n_snprintf(app->status, sizeof(app->status),
-                              "登录已过期，请重新登录");
-            } else if (result->failure == NETEASE_FAILURE_TLS_VERIFY) {
-                i18n_snprintf(app->status, sizeof(app->status),
-                              "证书错误 · 请检查系统时间");
-            } else if (result->failure == NETEASE_FAILURE_TRANSPORT) {
-                i18n_snprintf(app->status, sizeof(app->status),
-                              "网络不可用，已保留登录凭据");
-            } else {
-                i18n_snprintf(app->status, sizeof(app->status),
-                              "暂时无法验证登录，已保留凭据");
             }
+            app->status[0] = '\0';
             return;
         }
         if (result->kind == WORKER_JOB_DISCOVER &&
@@ -2268,18 +2759,31 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                      (unsigned int)result->song_count,
                      (unsigned int)(result->offset / NM3DS_LIBRARY_PAGE + 1));
             break;
-        case WORKER_JOB_ALBUM_TRACKS: {
-            if (!app->album_open || result->album_id <= 0 ||
-                (app->album_id > 0 && result->album_id != app->album_id) ||
-                (app->album_id <= 0 &&
-                 result->song_id != app->album_source_song_id)) {
+        case WORKER_JOB_ALBUM_TRACKS:
+        case WORKER_JOB_ARTIST_TRACKS: {
+            bool artist_result =
+                result->kind == WORKER_JOB_ARTIST_TRACKS;
+            bool wrong_source = artist_result ?
+                (!app->album_is_artist ||
+                 result->artist_id <= 0 ||
+                 result->artist_id != app->album_artist_id) :
+                (app->album_is_artist ||
+                 result->album_id <= 0 ||
+                 (app->album_id > 0 &&
+                  result->album_id != app->album_id) ||
+                 (app->album_id <= 0 &&
+                  result->song_id != app->album_source_song_id));
+            if (!app->album_open || wrong_source) {
                 app->mode = player_is_active(player) ? APP_PLAYING : APP_IDLE;
                 break;
             }
-            app->album_id = result->album_id;
-            if (result->album_name[0])
-                i18n_snprintf(app->album_name, sizeof(app->album_name),
-                              "%s", result->album_name);
+            if (!artist_result) {
+                app->album_id = result->album_id;
+                if (result->album_name[0])
+                    i18n_snprintf(app->album_name,
+                                  sizeof(app->album_name),
+                                  "%s", result->album_name);
+            }
             memcpy(app->album_tracks, result->songs,
                    result->song_count * sizeof(result->songs[0]));
             app->album_track_count = result->song_count;
@@ -2293,7 +2797,9 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             app->album_track_has_more = result->has_more;
             app->mode = player_is_active(player) ? APP_PLAYING : APP_IDLE;
             i18n_snprintf(app->status, sizeof(app->status),
-                          "已加载专辑 · %u / %u 首",
+                          artist_result ?
+                              "已加载歌手歌曲 · %u / %u 首" :
+                              "已加载专辑 · %u / %u 首",
                           (unsigned int)(result->offset +
                                          result->song_count),
                           (unsigned int)result->album_track_total);
@@ -2383,18 +2889,33 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             break;
         }
         case WORKER_JOB_SEARCH:
+            if (result->search_category != app->search_category)
+                break;
             if (!search_page_commit(&app->search_page, result->offset))
                 break;
-            memcpy(app->search, result->songs,
-                   result->song_count * sizeof(result->songs[0]));
-            app->search_count = result->song_count;
+            if (result->search_category == SEARCH_CATEGORY_SONG ||
+                result->search_category == SEARCH_CATEGORY_VOICE) {
+                memcpy(app->search, result->songs,
+                       result->song_count * sizeof(result->songs[0]));
+                app->search_count = result->song_count;
+            } else {
+                memcpy(app->search_items, result->search_items,
+                       result->search_item_count *
+                           sizeof(result->search_items[0]));
+                app->search_count = result->search_item_count;
+            }
             app->search_selected = 0;
             app->search_has_more = result->has_more;
             app->mode = player_is_active(player) ? APP_PLAYING : APP_IDLE;
             i18n_snprintf(app->status, sizeof(app->status),
-                     "找到 %u 首歌曲 · 第 %u 页",
-                     (unsigned int)result->song_count,
-                     (unsigned int)(result->offset / NM3DS_MAX_RESULTS + 1));
+                     "找到 %u 项%s · 第 %u 页",
+                     (unsigned int)app->search_count,
+                     i18n_text(search_category_name(
+                         result->search_category)),
+                     (unsigned int)(
+                         result->offset /
+                         search_category_page_size(
+                             result->search_category) + 1));
             break;
         case WORKER_JOB_PREPARE_SONG: {
             int index = queue_index_for_song(app, result->song_id);
@@ -2402,6 +2923,34 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 player_prepared_destroy(result->prepared_audio);
                 show_error(app, "准备的歌曲已不在播放列表中");
                 break;
+            }
+            /*
+             * PREPARE_SONG now includes the cover and lyrics. Apply them
+             * before opening either cached or progressive audio so no
+             * first-use SD reads can interrupt playback.
+             */
+            app->cache_stats_valid = false;
+            apply_song_catalog_fee(app, store, index,
+                                   result->catalog_fee);
+            apply_song_cover_url(app, store, result->song_id,
+                                 result->song_pic_url);
+            if (result->song_extras_cached)
+                app->extras_cached_song_id = result->song_id;
+            else if (app->extras_cached_song_id == result->song_id)
+                app->extras_cached_song_id = -1;
+            app->lyric_count = result->lyric_count;
+            app->lyric_song_id = result->song_id;
+            memcpy(app->lyrics, result->lyrics,
+                   result->lyric_count * sizeof(result->lyrics[0]));
+            if (result->cover_ready) {
+                char cover_error[192];
+                if (ui_upload_cover(ui, result->cover_pixels,
+                                    COVER_ART_PIXELS, result->song_id,
+                                    cover_error,
+                                    sizeof(cover_error)) == 0)
+                    (void)ui_save_ambient_background(
+                        ui, AMBIENT_BACKGROUND_PATH,
+                        cover_error, sizeof(cover_error));
             }
             if (result->audio_needs_download) {
                 MediaJob job;
@@ -2427,10 +2976,9 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                     app->current_queue >= 0 &&
                     app->current_queue != index;
                 i18n_snprintf(app->status, sizeof(app->status),
-                              switching ? "正在加载下一首 %u%%" :
+                              switching ? "正在加载歌曲 %u%%" :
                                           "正在准备播放 %u%%",
                               0U);
-                maybe_submit_song_extras(app, worker, index);
                 break;
             }
             if (result->audio_was_cached) {
@@ -2468,7 +3016,7 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             app->pending_queue = -1;
             app->current_audio_is_trial = result->audio_is_trial;
             complete_media_progress(app, result->song_id);
-            app->mode = APP_PLAYING;
+            arm_delayed_playback(app, player, index);
             bool seek_job_started = true;
             if (result->audio_seek_pending) {
                 MediaJob seek_job;
@@ -2483,14 +3031,20 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 seek_job_started = media &&
                     media_worker_submit(media, &seek_job);
             }
-            if (!seek_job_started)
+            if (!seek_job_started &&
+                app->playback_start_after_ms == 0U)
                 i18n_snprintf(app->status, sizeof(app->status),
                               "正在播放 · 暂不能跳转");
-            else set_playing_status(app, index);
-            maybe_submit_song_extras(app, worker, index);
             break;
         }
         case WORKER_JOB_SONG_EXTRAS: {
+            app->extras_song_id = -1;
+            app->extras_retry_song_id = -1;
+            app->extras_retry_after_ms = 0;
+            /* Cover and lyric files may have been added since the last
+             * aggregate scan. Keep the old values out of the settings footer
+             * until a fresh lightweight storage scan has completed. */
+            app->cache_stats_valid = false;
             int index = queue_index_for_song(app, result->song_id);
             if (index >= 0)
                 apply_song_catalog_fee(app, store, index,
@@ -2508,7 +3062,6 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 /* The pending song is cached but must not replace the cover
                  * and lyrics of audio that is still playing.  Re-submit at
                  * handoff; the worker will satisfy it from the cache. */
-                app->extras_song_id = -1;
                 break;
             }
             app->lyric_count = result->lyric_count;
@@ -2517,10 +3070,12 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                    result->lyric_count * sizeof(result->lyrics[0]));
             if (result->cover_ready) {
                 char cover_error[192];
-                ui_clear_cover(ui);
-                (void)ui_upload_cover(ui, result->cover_pixels,
-                                      COVER_ART_PIXELS, result->song_id,
-                                      cover_error, sizeof(cover_error));
+                if (ui_upload_cover(ui, result->cover_pixels,
+                                    COVER_ART_PIXELS, result->song_id,
+                                    cover_error, sizeof(cover_error)) == 0)
+                    (void)ui_save_ambient_background(
+                        ui, AMBIENT_BACKGROUND_PATH,
+                        cover_error, sizeof(cover_error));
             }
             if (!pending) {
                 app->mode = player_is_buffering(player) ? APP_BUFFERING :
@@ -2543,6 +3098,7 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 LoginContinuation continuation = app->login_continuation;
                 app->login_continuation = LOGIN_CONTINUATION_NONE;
                 app->logged_in = true;
+                app->account_verified = true;
                 begin_queue_cache_scan(app, true);
                 i18n_snprintf(app->nickname, sizeof(app->nickname), "%s",
                          result->nickname);
@@ -2555,8 +3111,7 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 if (auth_save(client, AUTH_PATH,
                               auth_error, sizeof(auth_error)) != 0)
                     i18n_snprintf(app->status, sizeof(app->status), "%s", auth_error);
-                else i18n_snprintf(app->status, sizeof(app->status),
-                              "已登录：%s", app->nickname);
+                else app->status[0] = '\0';
                 if (continuation == LOGIN_CONTINUATION_LIBRARY) {
                     app->account_open = false;
                     app->discover_section = DISCOVER_LIBRARY;
@@ -2581,11 +3136,11 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             if (!app->logged_in)
                 begin_queue_cache_scan(app, true);
             app->logged_in = true;
+            app->account_verified = true;
             i18n_snprintf(app->nickname, sizeof(app->nickname), "%s",
                      result->nickname);
             app->user_id = result->user_id;
-            i18n_snprintf(app->status, sizeof(app->status), "已登录：%s",
-                     result->nickname);
+            app->status[0] = '\0';
             if (app->tab == TAB_DISCOVER &&
                 app->discover_section == DISCOVER_LIBRARY &&
                 app->library_playlist_count == 0)
@@ -2641,7 +3196,6 @@ static void set_playing_status(AppState *app, int index) {
 }
 
 static void apply_media_result(AppState *app, Ui *ui, Player *player,
-                               NetworkWorker *worker,
                                NetworkRetryState *network_retry,
                                const MediaResult *result) {
     if (!result->success && !result->cancelled)
@@ -2701,8 +3255,11 @@ static void apply_media_result(AppState *app, Ui *ui, Player *player,
         set_queue_song_cached(app, result->song_id, true,
                               result->audio_is_trial);
         apply_media_cache_stats(app, result);
-        app->mode = player_is_paused(player) ? APP_PAUSED : APP_PLAYING;
-        set_playing_status(app, index);
+        if (app->playback_start_after_ms == 0U) {
+            app->mode = player_is_paused(player) ?
+                        APP_PAUSED : APP_PLAYING;
+            set_playing_status(app, index);
+        }
         diagnostic_log(app, "cached_seek_ready", player);
         return;
     }
@@ -2763,9 +3320,12 @@ static void apply_media_result(AppState *app, Ui *ui, Player *player,
     app->current_audio_is_trial = result->audio_is_trial;
     complete_media_progress(app, result->song_id);
     apply_media_cache_stats(app, result);
-    app->mode = player_is_paused(player) ? APP_PAUSED : APP_PLAYING;
-    set_playing_status(app, index);
-    maybe_submit_song_extras(app, worker, index);
+    if (current_stream) {
+        app->mode = player_is_paused(player) ? APP_PAUSED : APP_PLAYING;
+        set_playing_status(app, index);
+    } else {
+        arm_delayed_playback(app, player, index);
+    }
     diagnostic_log(app, "stream_handoff_ok", player);
     (void)ui;
 }
@@ -2776,7 +3336,7 @@ static void update_media(AppState *app, Ui *ui, Player *player,
     if (!media) return;
     static MediaResult result;
     if (media_worker_take_result(media, &result)) {
-        apply_media_result(app, ui, player, worker, network_retry, &result);
+        apply_media_result(app, ui, player, network_retry, &result);
         return;
     }
     MediaSnapshot snapshot;
@@ -2814,9 +3374,7 @@ static void update_media(AppState *app, Ui *ui, Player *player,
             app->queue_selected = index;
             app->pending_queue = -1;
             app->current_audio_is_trial = snapshot.audio_is_trial;
-            app->mode = APP_PLAYING;
-            set_playing_status(app, index);
-            maybe_submit_song_extras(app, worker, index);
+            arm_delayed_playback(app, player, index);
             diagnostic_log_media(app, "stream_open_ok", player,
                                  snapshot.published,
                                  app->media_total_bytes,
@@ -2834,7 +3392,9 @@ static void update_media(AppState *app, Ui *ui, Player *player,
     }
 
     if (app->current_queue == index && player_is_streaming(player)) {
-        if (player_is_buffering(player)) {
+        if (app->playback_start_after_ms != 0U) {
+            app->mode = APP_RESOLVING;
+        } else if (player_is_buffering(player)) {
             bool entering = app->mode != APP_BUFFERING;
             app->mode = APP_BUFFERING;
             i18n_snprintf(app->status, sizeof(app->status), "正在缓冲");
@@ -2864,11 +3424,11 @@ static void update_media(AppState *app, Ui *ui, Player *player,
         } else if (snapshot.total) {
             i18n_snprintf(
                 app->status, sizeof(app->status),
-                "正在加载下一首 %u%%",
+                "正在加载歌曲 %u%%",
                 media_download_percent(snapshot.received, snapshot.total));
         } else {
             i18n_snprintf(app->status, sizeof(app->status), "%s",
-                          i18n_text("正在加载下一首"));
+                          i18n_text("正在加载歌曲"));
         }
     }
 }
@@ -2888,7 +3448,8 @@ static void update_worker(AppState *app, PlaylistStore *store,
         !snapshot.background) {
         app->downloaded = snapshot.received;
         app->download_total = snapshot.total;
-        if (snapshot.status[0])
+        if (snapshot.status[0] &&
+            snapshot.kind != WORKER_JOB_ACCOUNT)
             i18n_snprintf(app->status, sizeof(app->status), "%s", snapshot.status);
         if (snapshot.kind == WORKER_JOB_DISCOVER)
             app->mode = APP_LOADING_DISCOVER;
@@ -2925,6 +3486,7 @@ static bool playlist_compaction_safe(const AppState *app,
                                      NetworkWorker *worker,
                                      MediaWorker *media) {
     if (!app || app->queue_replace_confirm ||
+        app->queue_remove_confirm ||
         (app->mode != APP_IDLE && app->mode != APP_PAUSED))
         return false;
     if (worker) {
@@ -3042,16 +3604,19 @@ int main(void) {
     static AppState app;
     memset(&app, 0, sizeof(app));
     app.tab = TAB_NOW_PLAYING;
-    app.focus = APP_FOCUS_PLAYLIST;
+    app.focus = APP_FOCUS_CONTENT;
     app.current_queue = -1;
     app.pending_queue = -1;
+    app.queue_remove_index = -1;
+    app.queue_remove_confirm_choice = -1;
     app.extras_song_id = -1;
+    app.extras_retry_song_id = -1;
     app.audio_cached_song_id = -1;
     app.extras_cached_song_id = -1;
     reset_prefetch_scan(&app);
     reset_media_progress(&app, 0);
     app.play_mode = PLAY_MODE_SEQUENCE;
-    app.immersive_lyric_style = IMMERSIVE_LYRIC_STYLE_WHEEL;
+    app.visualizer_mode = VISUALIZER_SPECTRUM;
     app.volume = 1.0f;
     app.mode = APP_IDLE;
     search_page_reset(&app.search_page);
@@ -3061,13 +3626,28 @@ int main(void) {
     settings_defaults(&saved_settings);
     app.cache_limit = saved_settings.cache_limit;
     app.language = saved_settings.language;
+    app.control_color_mode = saved_settings.control_color_mode;
+    app.lyric_alignment = saved_settings.lyric_alignment;
+    app.immersive_playback_mode =
+        saved_settings.immersive_playback_mode;
+    app.immersive_delay_seconds =
+        saved_settings.immersive_delay_seconds;
+    app.reduced_motion = saved_settings.reduced_motion;
+    app.dark_theme = saved_settings.dark_theme;
+    app.play_mode = saved_settings.play_mode;
+    app.visualizer_mode = saved_settings.visualizer_mode;
     app.debug_logging = saved_settings.debug_logging;
     i18n_set_language(app.language);
     app.cache_limit_selected = cache_limit_option_index(app.cache_limit);
     app.cache_limit_confirm_choice = -1;
+    reset_immersive_idle(&app, osGetTime());
     enum { STARTUP_STEP_COUNT = 7 };
-    ui_draw_startup(ui, 1, STARTUP_STEP_COUNT, i18n_text("读取设置"));
     ensure_storage_directories();
+    char ambient_error[192] = {0};
+    (void)ui_restore_ambient_background(
+        ui, AMBIENT_BACKGROUND_PATH,
+        ambient_error, sizeof(ambient_error));
+    ui_draw_startup(ui, 1, STARTUP_STEP_COUNT, i18n_text("读取设置"));
     char playlist_error[192];
     int settings_result = settings_load(
         SETTINGS_PATH, &saved_settings,
@@ -3075,6 +3655,16 @@ int main(void) {
     if (settings_result == 0) {
         app.cache_limit = saved_settings.cache_limit;
         app.language = saved_settings.language;
+        app.control_color_mode = saved_settings.control_color_mode;
+        app.lyric_alignment = saved_settings.lyric_alignment;
+        app.immersive_playback_mode =
+            saved_settings.immersive_playback_mode;
+        app.immersive_delay_seconds =
+            saved_settings.immersive_delay_seconds;
+        app.reduced_motion = saved_settings.reduced_motion;
+        app.dark_theme = saved_settings.dark_theme;
+        app.play_mode = saved_settings.play_mode;
+        app.visualizer_mode = saved_settings.visualizer_mode;
         app.debug_logging = saved_settings.debug_logging;
         i18n_set_language(app.language);
     }
@@ -3097,6 +3687,29 @@ int main(void) {
                             osGetTime(), playlist_error,
                             sizeof(playlist_error)) < 0)
         i18n_snprintf(app.status, sizeof(app.status), "%s", playlist_error);
+    else {
+        /* UI preferences are authoritative for controls shared across queues.
+         * Keep the legacy playlist field synchronized for old installations. */
+        app.play_mode = saved_settings.play_mode;
+        playlist_store.persisted_play_mode = app.play_mode;
+    }
+    /*
+     * Cache totals are user-visible settings data, not optional network
+     * metadata. Read them directly during startup so a busy network worker
+     * cannot leave the footer displaying its zero-initialized counters.
+     * cache_scan() performs no downloads and does not allocate cache groups.
+     */
+    CacheStats startup_cache_stats;
+    char startup_cache_error[192] = {0};
+    if (cache_scan(
+            STORAGE_ROOT, &startup_cache_stats,
+            startup_cache_error, sizeof(startup_cache_error)) == 0) {
+        app.cache_bytes = startup_cache_stats.bytes;
+        app.cache_audio_files = startup_cache_stats.audio_files;
+        app.cache_cover_files = startup_cache_stats.cover_files;
+        app.cache_lyric_files = startup_cache_stats.lyric_files;
+        app.cache_stats_valid = true;
+    }
     /* The console's physical slider owns volume; ignore legacy software
        volume values so an old playlist.bin cannot leave audio attenuated. */
     app.volume = 1.0f;
@@ -3188,11 +3801,14 @@ int main(void) {
     uint64_t next_battery_poll_ms = 0;
     uint64_t next_network_poll_ms = 0;
     unsigned int ui_update_frame = 0;
-    bool startup_cache_scan_pending = true;
+    bool startup_cache_scan_pending = !app.cache_stats_valid;
+    PlayerGesture player_gesture;
+    player_gesture_clear(&player_gesture);
     if (stereo_target_failed)
         diagnostic_log(&app, "stereo_target_failed", player);
     diagnostic_log(&app, "startup", player);
     hidSetRepeatParameters(20, 5);
+    bool gyro_ready = R_SUCCEEDED(HIDUSER_EnableGyroscope());
     ui_draw_startup(ui, STARTUP_STEP_COUNT, STARTUP_STEP_COUNT,
                     i18n_text("准备完成"));
     while (aptMainLoop()) {
@@ -3247,6 +3863,7 @@ int main(void) {
         validate_open_album_song(&app);
         if (media)
             update_media(&app, ui, player, worker, media, &network_retry);
+        update_delayed_playback(&app, player);
         if (wake_probe_requested)
             network_retry_request_immediate(&network_retry);
         maybe_submit_network_probe(&app, worker, media, &network_retry,
@@ -3257,26 +3874,55 @@ int main(void) {
                                           app.current_queue, false);
             else play_next(&app, worker);
         }
+        /*
+         * Extras may finish while a playlist-selected song is still pending.
+         * Their cached result is deliberately not applied to the old song;
+         * retry once the audio handoff is complete. The original one-shot
+         * submission could occur while the worker was still publishing its
+         * prepare result and then remain missed until the next manual skip.
+         */
+        if (worker && player_is_active(player) &&
+            app.pending_queue < 0 &&
+            app.current_queue >= 0 &&
+            app.current_queue < (int)app.queue_count) {
+            int64_t current_id =
+                app.queue[app.current_queue].id;
+            if (app.lyric_song_id != current_id)
+                maybe_submit_song_extras(
+                    &app, worker, app.current_queue);
+        }
+        bool cache_detail_requested =
+            app.tab == TAB_SETTINGS &&
+            app.focus == APP_FOCUS_CONTENT &&
+            (app.settings_selected == SETTINGS_CACHE_LIMIT ||
+             app.settings_selected == SETTINGS_CACHE_CLEAR);
+        if (cache_detail_requested && !app.cache_stats_valid)
+            startup_cache_scan_pending = true;
+        /*
+         * A cache row explicitly selected by the user takes priority over
+         * speculative next-song prefetch. Otherwise prefetch remains first.
+         */
+        if (worker && cache_detail_requested &&
+            !app.cache_stats_valid)
+            maybe_submit_background_storage_scan(
+                &app, worker, &startup_cache_scan_pending);
         maybe_submit_song_prefetch(&app, player, worker, media,
                                    network_ready && app.network_online);
-        if (worker)
+        if (worker && (!cache_detail_requested ||
+                       app.cache_stats_valid))
             maybe_submit_background_storage_scan(
                 &app, worker, &startup_cache_scan_pending);
 
-        if (app.immersive_lyrics &&
-            (!immersive_lyrics_available(&app) ||
-             app.dsp_firmware_prompt_open ||
-             app.network_certificate_prompt_open ||
-             app.queue_replace_confirm || app.bulk_enqueue_confirm ||
-             app.bulk_enqueue_active || ui_ime_active(ui) ||
-             app.account_open))
-            app.immersive_lyrics = false;
-
+        uint64_t input_now_ms = osGetTime();
         hidScanInput();
         u32 down = hidKeysDown();
         u32 held = hidKeysHeld();
         u32 up = hidKeysUp();
         u32 repeat = hidKeysDownRepeat();
+        ui_note_keys_down(ui, down);
+        if (down != 0U && !app.immersive_active)
+            reset_immersive_idle(&app, input_now_ms);
+        update_auto_immersive(&app, player, input_now_ms);
         if (down && !(down & KEY_START)) app.exit_confirm_until = 0;
         touchPosition touch;
         touchPosition *touch_ptr = NULL;
@@ -3284,27 +3930,56 @@ int main(void) {
             hidTouchRead(&touch);
             touch_ptr = &touch;
         }
-        if (app.immersive_lyrics) {
-            if (down & KEY_B) {
-                app.immersive_lyrics = false;
-                i18n_snprintf(app.status, sizeof(app.status),
-                              "已退出沉浸歌词");
-            } else if (down & KEY_Y) {
-                app.immersive_lyric_style = immersive_lyrics_next_style(
-                    app.immersive_lyric_style);
-                app.immersive_controls_since_ms = osGetTime();
+        if ((down & KEY_TOUCH) != 0U && touch_ptr &&
+            !app.immersive_active &&
+            !app.dsp_firmware_prompt_open &&
+            !app.network_certificate_prompt_open &&
+            app.settings_info_dialog == SETTINGS_INFO_NONE &&
+            !app.queue_replace_confirm &&
+            !app.queue_remove_confirm &&
+            !app.bulk_enqueue_confirm &&
+            !app.bulk_enqueue_active &&
+            !ui_ime_active(ui) && !app.coverflow_open) {
+            int search_category =
+                ui_search_category_touch(&app, touch_ptr);
+            if (search_category >= 0) {
+                select_search_category(
+                    &app, worker, (SearchCategory)search_category);
+                touch_ptr = NULL;
+            } else {
+                AppTab touched_tab = app.tab;
+                UiContentTouchAction touch_action =
+                    ui_content_touch(&app, touch_ptr, &touched_tab);
+                if (touch_action == UI_CONTENT_TOUCH_TAB) {
+                    for (int attempts = 0;
+                         attempts < TAB_COUNT &&
+                         app.tab != touched_tab; attempts++)
+                        change_tab(&app, worker, network_ready, 1);
+                    touch_ptr = NULL;
+                } else if (touch_action ==
+                           UI_CONTENT_TOUCH_ACTIVATE) {
+                    down |= KEY_A;
+                    touch_ptr = NULL;
+                }
             }
-            /* Immersive mode owns input. Clearing the frame's key/touch state
-             * prevents an exit press from also cancelling a download,
-             * changing tabs, deleting a queue item or seeking. */
-            down = 0;
-            held = 0;
-            up = 0;
-            repeat = 0;
-            touch_ptr = NULL;
         }
-
-        if (app.dsp_firmware_prompt_open) {
+        if (app.immersive_active &&
+            (down != 0U || (held & KEY_TOUCH) != 0U ||
+             immersive_gyro_shaken(
+                 gyro_ready, input_now_ms,
+                 app.immersive_gyro_ready_ms))) {
+            app.immersive_active = false;
+            reset_immersive_idle(&app, input_now_ms);
+            player_gesture_clear(&player_gesture);
+            down = 0U;
+            repeat = 0U;
+            touch_ptr = NULL;
+        } else if (app.immersive_active) {
+            /* While immersed, input only serves as an exit gesture. */
+        } else if (app.settings_info_dialog != SETTINGS_INFO_NONE) {
+            if ((down & (KEY_A | KEY_B)) != 0U)
+                app.settings_info_dialog = SETTINGS_INFO_NONE;
+        } else if (app.dsp_firmware_prompt_open) {
             if (down & (KEY_A | KEY_B)) {
                 app.dsp_firmware_prompt_open = false;
                 i18n_snprintf(app.status, sizeof(app.status),
@@ -3323,6 +3998,33 @@ int main(void) {
             else if (down & KEY_B)
                 finish_queue_replace_prompt(&app, &playlist_store,
                                             worker, false);
+        } else if (app.queue_remove_confirm) {
+            u32 dialog_move = down | repeat;
+            if (dialog_move & (KEY_LEFT | KEY_UP))
+                app.queue_remove_confirm_choice = 0;
+            else if (dialog_move & (KEY_RIGHT | KEY_DOWN))
+                app.queue_remove_confirm_choice = 1;
+            UiDialogTouchAction dialog_touch =
+                (down & KEY_TOUCH) && touch_ptr ?
+                ui_queue_remove_touch(touch_ptr) :
+                UI_DIALOG_TOUCH_NONE;
+            if (dialog_touch == UI_DIALOG_TOUCH_CONFIRM)
+                finish_queue_remove_prompt(
+                    &app, &playlist_store, ui, player,
+                    worker, media, true);
+            else if (dialog_touch == UI_DIALOG_TOUCH_CANCEL)
+                finish_queue_remove_prompt(
+                    &app, &playlist_store, ui, player,
+                    worker, media, false);
+            else if (down & KEY_A)
+                finish_queue_remove_prompt(
+                    &app, &playlist_store, ui, player,
+                    worker, media,
+                    app.queue_remove_confirm_choice == 0);
+            else if (down & KEY_B)
+                finish_queue_remove_prompt(
+                    &app, &playlist_store, ui, player,
+                    worker, media, false);
         } else if (app.bulk_enqueue_confirm) {
             if (down & KEY_A)
                 finish_bulk_enqueue_prompt(&app, worker, true);
@@ -3334,6 +4036,37 @@ int main(void) {
                 perform_search(&app, worker, ui_ime_text(ui), 0);
             else if (action == UI_IME_CANCEL)
                 i18n_snprintf(app.status, sizeof(app.status), "搜索输入已取消");
+        } else if (app.coverflow_open) {
+            if ((down & (KEY_B | KEY_SELECT)) != 0U) {
+                app.coverflow_open = false;
+            } else if ((down & (KEY_LEFT | KEY_CPAD_LEFT)) != 0U) {
+                step_coverflow(&app, -1);
+            } else if ((down & (KEY_RIGHT | KEY_CPAD_RIGHT)) != 0U) {
+                step_coverflow(&app, 1);
+            } else if ((down & KEY_A) != 0U &&
+                       app.coverflow_selected >= 0 &&
+                       app.coverflow_selected <
+                           (int)app.coverflow_count) {
+                int queue_index =
+                    app.coverflow_albums[
+                        app.coverflow_selected].representative_queue;
+                open_queue_album(&app, worker, queue_index, true);
+            } else if ((down & KEY_TOUCH) != 0U && touch_ptr) {
+                if (touch_ptr->py >= UI_BOTTOM_FOOTER_Y) {
+                    app.coverflow_open = false;
+                } else if (touch_ptr->px < 105) {
+                    step_coverflow(&app, -1);
+                } else if (touch_ptr->px >= 215) {
+                    step_coverflow(&app, 1);
+                } else if (app.coverflow_selected >= 0 &&
+                           app.coverflow_selected <
+                               (int)app.coverflow_count) {
+                    int queue_index =
+                        app.coverflow_albums[
+                            app.coverflow_selected].representative_queue;
+                    open_queue_album(&app, worker, queue_index, true);
+                }
+            }
         } else if (app.account_open) {
             if (down && !(down & KEY_X)) app.logout_confirm_until = 0;
             if ((down & KEY_START) && confirm_exit(&app)) break;
@@ -3378,6 +4111,7 @@ int main(void) {
                 if (app.logout_confirm_until >= now) {
                     auth_clear(&client, AUTH_PATH);
                     app.logged_in = false;
+                    app.account_verified = false;
                     app.nickname[0] = '\0';
                     app.user_id = 0;
                     reset_discover(&app);
@@ -3401,32 +4135,37 @@ int main(void) {
                               "正在取消全部加入");
             }
         } else {
-            if ((down & KEY_Y) && !(down & KEY_X) &&
+            bool player_panel_active =
                 app.tab == TAB_NOW_PLAYING &&
-                !app.album_open &&
-                immersive_lyrics_available(&app)) {
-                char font_error[192];
-                if (ui_prepare_immersive_font(
-                        ui, font_error, sizeof(font_error)) != 0) {
-                    i18n_snprintf(app.status, sizeof(app.status), "%s",
-                                  font_error);
-                } else {
-                    if (!immersive_lyrics_style_valid(
-                            app.immersive_lyric_style))
-                        app.immersive_lyric_style =
-                            IMMERSIVE_LYRIC_STYLE_WHEEL;
-                    app.immersive_lyrics = true;
-                    app.immersive_controls_since_ms = osGetTime();
-                    i18n_snprintf(app.status, sizeof(app.status),
-                                  "已进入沉浸歌词");
+                app.focus == APP_FOCUS_CONTENT &&
+                !app.album_open;
+            if (!player_panel_active) {
+                player_gesture_clear(&player_gesture);
+            } else {
+                uint64_t gesture_now = osGetTime();
+                execute_player_gesture(
+                    player_gesture_poll(&player_gesture, gesture_now),
+                    &app, &playlist_store, player, worker, network_ready);
+                if (down & KEY_A) {
+                    execute_player_gesture(
+                        player_gesture_note_a(
+                            &player_gesture, gesture_now),
+                        &app, &playlist_store, player, worker,
+                        network_ready);
+                    down &= ~KEY_A;
+                    repeat &= ~KEY_A;
                 }
-                /* Entering consumes the whole input frame just like leaving,
-                 * so a chord or held touch cannot also operate playback. */
-                down = 0;
-                held = 0;
-                up = 0;
-                repeat = 0;
-                touch_ptr = NULL;
+                const u32 previous_keys = KEY_LEFT | KEY_CPAD_LEFT;
+                const u32 next_keys = KEY_RIGHT | KEY_CPAD_RIGHT;
+                if (down & previous_keys) {
+                    play_previous(&app, worker);
+                    down &= ~previous_keys;
+                    repeat &= ~previous_keys;
+                } else if (down & next_keys) {
+                    play_next(&app, worker);
+                    down &= ~next_keys;
+                    repeat &= ~next_keys;
+                }
             }
             if ((down & KEY_START) && confirm_exit(&app)) break;
             if (down & KEY_L)
@@ -3479,10 +4218,14 @@ int main(void) {
                 } else if (!cancelled && app.album_open) {
                     close_album(&app);
                 } else if (!cancelled && app.focus == APP_FOCUS_PLAYLIST &&
-                    app.tab != TAB_NOW_PLAYING) {
+                    app.tab == TAB_NOW_PLAYING) {
                     app.focus = APP_FOCUS_CONTENT;
                     i18n_snprintf(app.status, sizeof(app.status),
-                             "已切换到上屏控制");
+                                  "已返回播放器");
+                } else if (!cancelled && app.focus == APP_FOCUS_PLAYLIST) {
+                    app.focus = APP_FOCUS_CONTENT;
+                    i18n_snprintf(app.status, sizeof(app.status),
+                             "已切换到当前页面");
                 } else if (!cancelled && app.focus == APP_FOCUS_CONTENT &&
                            app.tab == TAB_DISCOVER &&
                            app.discover_section == DISCOVER_LIBRARY) {
@@ -3528,16 +4271,32 @@ int main(void) {
                              "未应用的设置已丢弃");
                 }
             }
-            if ((repeat & KEY_UP) != 0) {
-                if (app.album_open && app.focus == APP_FOCUS_CONTENT) {
+            const u32 navigation_up = KEY_UP | KEY_CPAD_UP;
+            const u32 navigation_down = KEY_DOWN | KEY_CPAD_DOWN;
+            const u32 navigation_left = KEY_LEFT | KEY_CPAD_LEFT;
+            const u32 navigation_right = KEY_RIGHT | KEY_CPAD_RIGHT;
+            bool moving_queue_item =
+                app.focus == APP_FOCUS_PLAYLIST &&
+                (held & KEY_Y) != 0U;
+            if ((repeat & navigation_up) != 0) {
+                if (moving_queue_item) {
+                    move_queue_item(&app, &playlist_store, -1);
+                } else if (app.album_open &&
+                           app.focus == APP_FOCUS_CONTENT) {
                     move_album_selection(&app, worker, -1);
                 } else if (app.focus == APP_FOCUS_CONTENT &&
-                    app.tab == TAB_DISCOVER && !app.network_online) {
-                    /* Online content has no selectable rows while offline. */
+                    app.tab == TAB_DISCOVER &&
+                    app.discover_section == DISCOVER_HOME) {
+                    move_discover_home(&app, 0, -1);
                 } else if (app.focus == APP_FOCUS_CONTENT &&
                     app.tab == TAB_DISCOVER &&
-                    app.discover_section == DISCOVER_HOME)
-                    move_discover_home(&app, 0, -1);
+                    app.discover_section ==
+                        DISCOVER_RECOMMENDATION_SOURCES) {
+                    /* The source chooser is a horizontal-only row. */
+                } else if (app.focus == APP_FOCUS_CONTENT &&
+                    app.tab == TAB_DISCOVER && !app.network_online) {
+                    /* Online result rows are not selectable while offline. */
+                }
                 else move_selection(&app, -1);
                 if (app.focus == APP_FOCUS_CONTENT &&
                     app.tab == TAB_SETTINGS) {
@@ -3546,16 +4305,25 @@ int main(void) {
                     app.clear_cache_confirm_until = 0;
                 }
             }
-            if ((repeat & KEY_DOWN) != 0) {
-                if (app.album_open && app.focus == APP_FOCUS_CONTENT) {
+            if ((repeat & navigation_down) != 0) {
+                if (moving_queue_item) {
+                    move_queue_item(&app, &playlist_store, 1);
+                } else if (app.album_open &&
+                           app.focus == APP_FOCUS_CONTENT) {
                     move_album_selection(&app, worker, 1);
                 } else if (app.focus == APP_FOCUS_CONTENT &&
-                    app.tab == TAB_DISCOVER && !app.network_online) {
-                    /* Online content has no selectable rows while offline. */
+                    app.tab == TAB_DISCOVER &&
+                    app.discover_section == DISCOVER_HOME) {
+                    move_discover_home(&app, 0, 1);
                 } else if (app.focus == APP_FOCUS_CONTENT &&
                     app.tab == TAB_DISCOVER &&
-                    app.discover_section == DISCOVER_HOME)
-                    move_discover_home(&app, 0, 1);
+                    app.discover_section ==
+                        DISCOVER_RECOMMENDATION_SOURCES) {
+                    /* The source chooser is a horizontal-only row. */
+                } else if (app.focus == APP_FOCUS_CONTENT &&
+                    app.tab == TAB_DISCOVER && !app.network_online) {
+                    /* Online result rows are not selectable while offline. */
+                }
                 else move_selection(&app, 1);
                 if (app.focus == APP_FOCUS_CONTENT &&
                     app.tab == TAB_SETTINGS) {
@@ -3564,19 +4332,18 @@ int main(void) {
                     app.clear_cache_confirm_until = 0;
                 }
             }
-            if ((repeat & KEY_LEFT) != 0 &&
+            if ((repeat & navigation_left) != 0 &&
                 app.focus == APP_FOCUS_PLAYLIST)
                 move_queue_page(&app, -1);
-            if ((repeat & KEY_RIGHT) != 0 &&
+            if ((repeat & navigation_right) != 0 &&
                 app.focus == APP_FOCUS_PLAYLIST)
                 move_queue_page(&app, 1);
-            if ((repeat & KEY_LEFT) != 0 && app.focus == APP_FOCUS_CONTENT) {
+            if ((repeat & navigation_left) != 0 &&
+                app.focus == APP_FOCUS_CONTENT) {
                 if (app.tab == TAB_DISCOVER &&
-                    app.network_online &&
                     app.discover_section == DISCOVER_HOME)
                     move_discover_home(&app, -1, 0);
                 else if (app.tab == TAB_DISCOVER &&
-                         app.network_online &&
                          app.discover_section ==
                              DISCOVER_RECOMMENDATION_SOURCES)
                     move_recommendation_source(&app, -1);
@@ -3591,17 +4358,49 @@ int main(void) {
                            app.settings_selected == SETTINGS_LANGUAGE) {
                     apply_language(&app, APP_LANGUAGE_CHINESE);
                 } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_CONTROL_COLOR) {
+                    apply_control_color_mode(
+                        &app,
+                        (ControlColorMode)(
+                            (app.control_color_mode +
+                             CONTROL_COLOR_COUNT - 1) %
+                            CONTROL_COLOR_COUNT));
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_DARK_THEME) {
+                    apply_dark_theme(&app, false);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_LYRIC_ALIGNMENT) {
+                    apply_lyric_alignment(
+                        &app, LYRIC_ALIGNMENT_CENTER);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_IMMERSIVE_PLAYBACK) {
+                    if (app.immersive_playback_mode ==
+                        IMMERSIVE_PLAYBACK_MANUAL)
+                        apply_immersive_playback(
+                            &app, IMMERSIVE_PLAYBACK_AUTO, 60U);
+                    else if (app.immersive_delay_seconds > 5U)
+                        apply_immersive_playback(
+                            &app, IMMERSIVE_PLAYBACK_AUTO,
+                            app.immersive_delay_seconds - 5U);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_REDUCED_MOTION) {
+                    apply_reduced_motion(&app, false);
+                } else if (app.tab == TAB_SETTINGS &&
                            app.settings_selected == SETTINGS_DEBUG_LOGGING) {
                     apply_debug_logging(&app, false, player);
                 }
             }
-            if ((repeat & KEY_RIGHT) != 0 && app.focus == APP_FOCUS_CONTENT) {
+            if ((repeat & navigation_right) != 0 &&
+                app.focus == APP_FOCUS_CONTENT) {
                 if (app.tab == TAB_DISCOVER &&
-                    app.network_online &&
                     app.discover_section == DISCOVER_HOME)
                     move_discover_home(&app, 1, 0);
                 else if (app.tab == TAB_DISCOVER &&
-                         app.network_online &&
                          app.discover_section ==
                              DISCOVER_RECOMMENDATION_SOURCES)
                     move_recommendation_source(&app, 1);
@@ -3616,6 +4415,40 @@ int main(void) {
                 } else if (app.tab == TAB_SETTINGS &&
                            app.settings_selected == SETTINGS_LANGUAGE) {
                     apply_language(&app, APP_LANGUAGE_ENGLISH);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_CONTROL_COLOR) {
+                    apply_control_color_mode(
+                        &app,
+                        (ControlColorMode)(
+                            (app.control_color_mode + 1) %
+                            CONTROL_COLOR_COUNT));
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_DARK_THEME) {
+                    apply_dark_theme(&app, true);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_LYRIC_ALIGNMENT) {
+                    apply_lyric_alignment(
+                        &app, LYRIC_ALIGNMENT_LEFT);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_IMMERSIVE_PLAYBACK) {
+                    if (app.immersive_playback_mode ==
+                        IMMERSIVE_PLAYBACK_AUTO &&
+                        app.immersive_delay_seconds < 60U)
+                        apply_immersive_playback(
+                            &app, IMMERSIVE_PLAYBACK_AUTO,
+                            app.immersive_delay_seconds + 5U);
+                    else
+                        apply_immersive_playback(
+                            &app, IMMERSIVE_PLAYBACK_MANUAL,
+                            app.immersive_delay_seconds);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_REDUCED_MOTION) {
+                    apply_reduced_motion(&app, true);
                 } else if (app.tab == TAB_SETTINGS &&
                            app.settings_selected == SETTINGS_DEBUG_LOGGING) {
                     apply_debug_logging(&app, true, player);
@@ -3686,10 +4519,12 @@ int main(void) {
                 app.discover_section == DISCOVER_SEARCH &&
                 !app.search_page.loading &&
                 app.network_online &&
-                app.search_page.committed_offset >= NM3DS_MAX_RESULTS)
+                app.search_page.committed_offset >=
+                    search_category_page_size(app.search_category))
                 perform_search(&app, worker, app.query,
                                app.search_page.committed_offset -
-                                   NM3DS_MAX_RESULTS);
+                                   search_category_page_size(
+                                       app.search_category));
             if ((down & KEY_RIGHT) != 0 &&
                 app.focus == APP_FOCUS_CONTENT && app.tab == TAB_DISCOVER &&
                 app.discover_section == DISCOVER_SEARCH &&
@@ -3698,11 +4533,11 @@ int main(void) {
                 app.search_has_more)
                 perform_search(&app, worker, app.query,
                                app.search_page.committed_offset +
-                                   NM3DS_MAX_RESULTS);
+                                   search_category_page_size(
+                                       app.search_category));
             if (down & KEY_X) {
                 if (app.focus == APP_FOCUS_PLAYLIST)
-                    remove_playlist_item(&app, &playlist_store,
-                                         ui, player, worker, media);
+                    begin_queue_remove_prompt(&app);
                 else if (app.album_open)
                     begin_album_enqueue_prompt(&app, worker);
                 else if (app.tab == TAB_DISCOVER &&
@@ -3722,19 +4557,27 @@ int main(void) {
             if ((down & KEY_Y) && !(down & KEY_X)) {
                 if (app.focus == APP_FOCUS_CONTENT &&
                     app.tab == TAB_DISCOVER &&
+                    app.discover_section == DISCOVER_SEARCH &&
+                    network_ready && app.network_online &&
+                    !app.search_page.loading &&
+                    !network_task_busy(worker)) {
+                    change_search_category(&app, worker, 1);
+                } else if (app.focus == APP_FOCUS_CONTENT &&
+                    app.tab == TAB_DISCOVER &&
                     app.discover_section == DISCOVER_RECOMMENDATIONS &&
                     network_ready && app.network_online &&
                     !network_task_busy(worker)) {
                     remember_discover_page(&app);
                     load_discover(&app, worker, app.discover_offset);
+                } else if (app.focus == APP_FOCUS_CONTENT &&
+                           app.tab == TAB_NOW_PLAYING &&
+                           immersive_context_ready(&app, player)) {
+                    enter_immersive(&app, osGetTime());
                 }
             }
-            if (down & KEY_SELECT) {
-                if (app.album_open)
-                    toggle_screen_focus(&app);
-                else if (app.tab == TAB_NOW_PLAYING)
-                    cycle_play_mode(&app, &playlist_store);
-                else toggle_screen_focus(&app);
+            if ((down & KEY_SELECT) &&
+                app.focus != APP_FOCUS_PLAYLIST) {
+                toggle_screen_focus(&app);
             }
             if (down & KEY_A) {
                 if (app.focus == APP_FOCUS_PLAYLIST) {
@@ -3802,12 +4645,52 @@ int main(void) {
                         apply_language(
                             &app, app.language == APP_LANGUAGE_CHINESE ?
                                 APP_LANGUAGE_ENGLISH : APP_LANGUAGE_CHINESE);
+                    else if (app.settings_selected == SETTINGS_CONTROL_COLOR)
+                        apply_control_color_mode(
+                            &app,
+                            (ControlColorMode)(
+                                (app.control_color_mode + 1) %
+                                CONTROL_COLOR_COUNT));
+                    else if (app.settings_selected ==
+                             SETTINGS_DARK_THEME)
+                        apply_dark_theme(
+                            &app, !app.dark_theme);
+                    else if (app.settings_selected ==
+                             SETTINGS_LYRIC_ALIGNMENT)
+                        apply_lyric_alignment(
+                            &app,
+                            (LyricAlignment)(
+                                (app.lyric_alignment + 1) %
+                                LYRIC_ALIGNMENT_COUNT));
+                    else if (app.settings_selected ==
+                             SETTINGS_IMMERSIVE_PLAYBACK) {
+                        if (app.immersive_playback_mode ==
+                            IMMERSIVE_PLAYBACK_MANUAL)
+                            apply_immersive_playback(
+                                &app, IMMERSIVE_PLAYBACK_AUTO, 10U);
+                        else
+                            apply_immersive_playback(
+                                &app, IMMERSIVE_PLAYBACK_MANUAL,
+                                app.immersive_delay_seconds);
+                    }
+                    else if (app.settings_selected ==
+                             SETTINGS_REDUCED_MOTION)
+                        apply_reduced_motion(
+                            &app, !app.reduced_motion);
                     else if (app.settings_selected == SETTINGS_CACHE_LIMIT)
                         apply_selected_cache_limit(&app, worker);
                     else if (app.settings_selected == SETTINGS_DEBUG_LOGGING)
                         apply_debug_logging(&app, !app.debug_logging, player);
                     else if (app.settings_selected == SETTINGS_CACHE_CLEAR)
                         confirm_clear_cache(&app, worker);
+                    else if (app.settings_selected == SETTINGS_CONTACT)
+                        app.settings_info_dialog = SETTINGS_INFO_CONTACT;
+                    else if (app.settings_selected == SETTINGS_REPOSITORY)
+                        app.settings_info_dialog =
+                            SETTINGS_INFO_REPOSITORY;
+                    else if (app.settings_selected == SETTINGS_USAGE_NOTICE)
+                        app.settings_info_dialog =
+                            SETTINGS_INFO_USAGE_NOTICE;
                 } else if (app.tab == TAB_DISCOVER &&
                            app.discover_section == DISCOVER_SEARCH &&
                            app.search_page.loading) {
@@ -3815,7 +4698,18 @@ int main(void) {
                                   "搜索中 · 第 %u 页",
                                   (unsigned int)(
                                       app.search_page.pending_offset /
-                                      NM3DS_MAX_RESULTS + 1));
+                                      search_category_page_size(
+                                          app.search_category) + 1));
+                } else if (app.tab == TAB_DISCOVER &&
+                           app.discover_section == DISCOVER_SEARCH &&
+                           app.search_category == SEARCH_CATEGORY_ALBUM &&
+                           network_ready && app.network_online) {
+                    open_search_album(&app, worker);
+                } else if (app.tab == TAB_DISCOVER &&
+                           app.discover_section == DISCOVER_SEARCH &&
+                           app.search_category == SEARCH_CATEGORY_ARTIST &&
+                           network_ready && app.network_online) {
+                    open_search_artist(&app, worker);
                 } else if (network_ready && app.network_online) {
                     const Song *song = selected_song(&app);
                     if (song)
@@ -3830,10 +4724,11 @@ int main(void) {
                         begin_search_input(&app, ui, player);
                 }
             }
-            if ((down & KEY_TOUCH) && touch_ptr)
+            if ((down & KEY_TOUCH) && touch_ptr) {
                 handle_player_touch(&app, &playlist_store,
                                     player, worker, network_ready,
                                     touch_ptr);
+            }
             if (app.seek_dragging && (held & KEY_TOUCH) && touch_ptr)
                 (void)ui_player_seek_ratio(touch_ptr, &app.seek_ratio);
             if (app.seek_dragging && (up & KEY_TOUCH)) {
@@ -3883,6 +4778,7 @@ int main(void) {
                                   sizeof(playlist_state_error)) != 0)
         playlist_persistence_error(&app, playlist_state_error);
     diagnostic_log(&app, "shutdown", player);
+    if (gyro_ready) (void)HIDUSER_DisableGyroscope();
     aptUnhook(&apt_cookie);
     if (worker) network_worker_destroy(worker);
     if (media) media_worker_destroy(media);

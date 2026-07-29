@@ -24,16 +24,17 @@ ROMFS_FILES := $(wildcard $(PROJECT_ROOT)/$(ROMFS)/*)
 ICON        := icon-v4.png
 
 APP_TITLE       := ClouDS Music
-APP_DESCRIPTION := streaming music client for Nintendo 3DS
-APP_AUTHOR      := cadl
-APP_VERSION     := 1.1.0
-APP_RELEASE_DATE := 2026-07-25
+APP_DESCRIPTION := ClouDS Music
+APP_AUTHOR      := Epic & cadl
+APP_VERSION     := 2.0.0
+APP_RELEASE_DATE := 2026-07-28
 APP_VERSION_PARTS := $(subst ., ,$(APP_VERSION))
+SMDH_FLAGS       := visible,allow3d,recordusage,extendedbanner
 
 CIA_TARGET       := $(TARGET)
 CIA_RSF          := $(PROJECT_ROOT)/cia/build-cia.rsf
-CIA_BANNER_IMAGE := $(PROJECT_ROOT)/banner-v2.png
-CIA_BANNER_AUDIO := $(PROJECT_ROOT)/banner.wav
+CIA_BANNER_MODEL := $(PROJECT_ROOT)/banner_3d/banner.cgfx
+CIA_BANNER_AUDIO := $(PROJECT_ROOT)/banner_3d/audio.wav
 CIA_BANNER       := $(PROJECT_ROOT)/$(BUILD)/$(CIA_TARGET).bnr
 CIA_OUTPUT       := $(PROJECT_ROOT)/$(CIA_TARGET).cia
 CIA_VERSION_MAJOR := $(word 1,$(APP_VERSION_PARTS))
@@ -57,9 +58,15 @@ LDFLAGS     := -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 LIBS        := -lcitro2d -lcitro3d -lcurl \
                -lmbedtls -lmbedx509 -lmbedcrypto -lpng -ljpeg -lz -lctru -lm
-LIBDIRS     := $(CTRULIB) $(PORTLIBS)
+# devkitPro's macOS pacman package may install portlibs below an additional
+# opt/devkitpro prefix while the compiler itself remains in $(DEVKITPRO).
+# Prefer the canonical path, then transparently accept that packaged layout.
+PORTLIBS_RESOLVED := $(if $(wildcard $(PORTLIBS)/lib),$(PORTLIBS),\
+	$(if $(wildcard $(DEVKITPRO)/opt/devkitpro/portlibs/3ds/lib),\
+	$(DEVKITPRO)/opt/devkitpro/portlibs/3ds,$(PORTLIBS)))
+LIBDIRS     := $(CTRULIB) $(PORTLIBS_RESOLVED)
 
-AZAHAR_APP ?= $(PROJECT_ROOT)/.tools/Azahar.app
+AZAHAR_APP ?= $(HOME)/Azahar.app
 GDB_PORT   ?= 24689
 OLD3DS_STRESS_BUILD  := build-old3ds-stress
 OLD3DS_STRESS_TARGET := $(TARGET)-old3ds-stress
@@ -114,6 +121,9 @@ $(BUILD):
 host-test:
 	@python3 tests/test_ui_font_whitelist.py
 	@python3 tests/test_bcfnt_normalize.py
+	@python3 tests/test_japanese_font_whitelist.py
+	@python3 tests/test_immersive_font_alignment.py
+	@python3 tests/test_i18n_coverage.py
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		source/i18n.c tests/test_i18n.c -o tests/test_i18n
 	@tests/test_i18n
@@ -160,11 +170,27 @@ host-test:
 		-o tests/test_playback_navigation
 	@tests/test_playback_navigation
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/player_gesture.c tests/test_player_gesture.c \
+		-o tests/test_player_gesture
+	@tests/test_player_gesture
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		source/search_page.c tests/test_search_page.c -o tests/test_search_page
 	@tests/test_search_page
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		tests/test_ui_layout.c -o tests/test_ui_layout
 	@tests/test_ui_layout
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/ui_sound_scene.c tests/test_ui_sound_scene.c \
+		-o tests/test_ui_sound_scene
+	@tests/test_ui_sound_scene
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/ui_motion.c tests/test_ui_motion.c -lm \
+		-o tests/test_ui_motion
+	@tests/test_ui_motion
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/ambient_state.c source/i18n.c tests/test_ambient_state.c \
+		-o tests/test_ambient_state
+	@tests/test_ambient_state
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		source/control_hint_layout.c tests/test_control_hint_layout.c \
 		-lm -o tests/test_control_hint_layout
@@ -188,6 +214,10 @@ host-test:
 		-o tests/test_lyric_animation
 	@tests/test_lyric_animation
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/lyric_parser.c source/unicode_text.c \
+		tests/test_lyric_parser.c -o tests/test_lyric_parser
+	@tests/test_lyric_parser
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		source/immersive_font_data.c tests/test_immersive_font_data.c \
 		-o tests/test_immersive_font_data
 	@tests/test_immersive_font_data
@@ -199,7 +229,8 @@ host-test:
 		source/media_policy.c tests/test_media_policy.c -o tests/test_media_policy
 	@tests/test_media_policy
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
-		source/now_playing_policy.c source/immersive_lyrics.c \
+		source/now_playing_policy.c source/lyric_parser.c \
+		source/unicode_text.c \
 		tests/test_now_playing_policy.c \
 		-o tests/test_now_playing_policy
 	@tests/test_now_playing_policy
@@ -344,7 +375,8 @@ clean:
 		tests/test_download_policy tests/test_media_policy \
 		tests/test_now_playing_policy tests/test_power_policy \
 		tests/test_network_retry tests/test_diagnostic_text \
-		tests/test_playback_navigation tests/test_playback_order \
+		tests/test_playback_navigation tests/test_player_gesture \
+		tests/test_playback_order \
 		tests/test_prefetch_policy tests/test_weapi tests/test_eapi_stream \
 		tests/test_playlist_index tests/test_song_index tests/test_i18n \
 		tests/test_cover_decode \
@@ -361,12 +393,20 @@ qrcodegen.o: CFLAGS += -Wno-type-limits
 $(OUTPUT).3dsx: $(OUTPUT).elf $(_3DSXDEPS) $(ROMFS_FILES)
 $(OUTPUT).elf: $(OFILES)
 
+# devkitPro's default smdhtool rule does not expose the SMDH flags required to
+# declare an animated extended banner, so build the metadata explicitly.
+$(OUTPUT).smdh: $(APP_ICON) $(MAKEFILE_LIST) $(BANNERTOOL)
+	@$(BANNERTOOL) makesmdh \
+		-s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" \
+		-f "$(SMDH_FLAGS)" -i "$(APP_ICON)" -o "$@"
+	@printf 'built ... %s\n' "$(notdir $@)"
+
 cia: $(CIA_OUTPUT)
 
-$(CIA_BANNER): $(CIA_BANNER_IMAGE) $(CIA_BANNER_AUDIO) $(BANNERTOOL)
+$(CIA_BANNER): $(CIA_BANNER_MODEL) $(CIA_BANNER_AUDIO) $(BANNERTOOL)
 	@mkdir -p $(dir $@)
 	@$(BANNERTOOL) makebanner \
-		-i "$(CIA_BANNER_IMAGE)" -a "$(CIA_BANNER_AUDIO)" -o "$@"
+		-ci "$(CIA_BANNER_MODEL)" -a "$(CIA_BANNER_AUDIO)" -o "$@"
 
 $(CIA_OUTPUT): $(OUTPUT).elf $(OUTPUT).smdh $(CIA_BANNER) $(CIA_RSF) \
 		$(ROMFS_FILES) $(MAKEROM)

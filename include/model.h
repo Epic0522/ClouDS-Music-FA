@@ -9,12 +9,14 @@
 #include "i18n.h"
 
 #define NM3DS_MAX_RESULTS 12
+#define NM3DS_VOICE_RESULTS 4
 #define NM3DS_RECOMMEND_RESULTS 18
 #define NM3DS_LIBRARY_PAGE 8
 #define NM3DS_LIBRARY_BATCH_PAGE NM3DS_LIBRARY_PAGE
 #define NM3DS_ALBUM_PAGE 8
 #define NM3DS_ALBUM_VISIBLE_ROWS 7
 #define NM3DS_MAX_QUEUE 1000
+#define NM3DS_MAX_COVERFLOW_ALBUMS 64
 #define NM3DS_PREFETCH_SCAN_MAX 16
 #define NM3DS_MAX_LYRICS 96
 
@@ -57,6 +59,26 @@ typedef struct {
     uint8_t fee;
 } Song;
 
+typedef enum {
+    SEARCH_CATEGORY_SONG = 0,
+    SEARCH_CATEGORY_ARTIST,
+    SEARCH_CATEGORY_ALBUM,
+    SEARCH_CATEGORY_VOICE,
+    SEARCH_CATEGORY_COUNT
+} SearchCategory;
+
+static inline size_t search_category_page_size(SearchCategory category) {
+    return category == SEARCH_CATEGORY_VOICE ?
+           NM3DS_VOICE_RESULTS : NM3DS_MAX_RESULTS;
+}
+
+typedef struct {
+    int64_t id;
+    char title[128];
+    char subtitle[96];
+    char pic_url[320];
+} NeteaseSearchItem;
+
 static inline bool song_is_vip(const Song *song) {
     return song && song->fee == SONG_FEE_VIP;
 }
@@ -72,14 +94,6 @@ typedef struct {
     uint32_t time_ms;
     char text[160];
 } LyricLine;
-
-typedef enum {
-    IMMERSIVE_LYRIC_STYLE_WHEEL = 0,
-    IMMERSIVE_LYRIC_STYLE_FLIP,
-    IMMERSIVE_LYRIC_STYLE_FADE,
-    IMMERSIVE_LYRIC_STYLE_CRAWL,
-    IMMERSIVE_LYRIC_STYLE_COUNT
-} ImmersiveLyricStyle;
 
 typedef struct {
     int64_t id;
@@ -161,6 +175,11 @@ typedef enum {
 
 typedef enum {
     SETTINGS_LANGUAGE = 0,
+    SETTINGS_CONTROL_COLOR,
+    SETTINGS_DARK_THEME,
+    SETTINGS_LYRIC_ALIGNMENT,
+    SETTINGS_IMMERSIVE_PLAYBACK,
+    SETTINGS_REDUCED_MOTION,
     SETTINGS_CACHE_LIMIT,
     SETTINGS_DEBUG_LOGGING,
     SETTINGS_CACHE_CLEAR,
@@ -171,12 +190,51 @@ typedef enum {
     SETTINGS_ITEM_COUNT
 } SettingsItem;
 
+typedef enum {
+    SETTINGS_INFO_NONE = 0,
+    SETTINGS_INFO_CONTACT,
+    SETTINGS_INFO_REPOSITORY,
+    SETTINGS_INFO_USAGE_NOTICE
+} SettingsInfoDialog;
+
+typedef enum {
+    LYRIC_ALIGNMENT_CENTER = 0,
+    LYRIC_ALIGNMENT_LEFT,
+    LYRIC_ALIGNMENT_COUNT
+} LyricAlignment;
+
+typedef enum {
+    CONTROL_COLOR_YELLOW = 0,
+    CONTROL_COLOR_BLACK,
+    CONTROL_COLOR_ADAPTIVE,
+    CONTROL_COLOR_COUNT
+} ControlColorMode;
+
+typedef enum {
+    IMMERSIVE_PLAYBACK_AUTO = 0,
+    IMMERSIVE_PLAYBACK_MANUAL
+} ImmersivePlaybackMode;
+
+typedef struct {
+    char album[96];
+    char artist[96];
+    int representative_queue;
+    size_t track_count;
+} CoverFlowAlbum;
+
 static inline bool settings_item_is_interactive(int item) {
-    return item >= SETTINGS_LANGUAGE && item <= SETTINGS_CACHE_CLEAR;
+    return (item >= SETTINGS_LANGUAGE && item <= SETTINGS_CACHE_CLEAR) ||
+           item == SETTINGS_CONTACT ||
+           item == SETTINGS_REPOSITORY;
 }
 
 static inline bool settings_item_is_adjustable(int item) {
-    return item == SETTINGS_LANGUAGE || item == SETTINGS_CACHE_LIMIT ||
+    return item == SETTINGS_LANGUAGE || item == SETTINGS_CONTROL_COLOR ||
+           item == SETTINGS_DARK_THEME ||
+           item == SETTINGS_LYRIC_ALIGNMENT ||
+           item == SETTINGS_IMMERSIVE_PLAYBACK ||
+           item == SETTINGS_REDUCED_MOTION ||
+           item == SETTINGS_CACHE_LIMIT ||
            item == SETTINGS_DEBUG_LOGGING;
 }
 
@@ -187,9 +245,18 @@ typedef enum {
     PLAY_MODE_COUNT
 } PlayMode;
 
+typedef enum {
+    VISUALIZER_OSCILLOSCOPE = 0,
+    VISUALIZER_SPECTRUM,
+    VISUALIZER_LEVELS,
+    VISUALIZER_NONE,
+    VISUALIZER_COUNT
+} VisualizerMode;
+
 typedef struct {
     AppTab tab;
     AppFocus focus;
+    VisualizerMode visualizer_mode;
 
     Song discover[NM3DS_RECOMMEND_RESULTS];
     size_t discover_count;
@@ -229,13 +296,19 @@ typedef struct {
     size_t bulk_enqueue_existing;
 
     Song search[NM3DS_MAX_RESULTS];
+    NeteaseSearchItem search_items[NM3DS_MAX_RESULTS];
     size_t search_count;
     int search_selected;
+    SearchCategory search_category;
     SearchPageState search_page;
     bool search_has_more;
 
     bool album_open;
+    bool album_return_to_search;
+    bool album_return_to_coverflow;
+    bool album_is_artist;
     int64_t album_id;
+    int64_t album_artist_id;
     int64_t album_source_song_id;
     char album_name[96];
     Song album_tracks[NM3DS_ALBUM_PAGE];
@@ -245,6 +318,11 @@ typedef struct {
     size_t album_track_offset;
     size_t album_track_total;
     bool album_track_has_more;
+
+    bool coverflow_open;
+    CoverFlowAlbum coverflow_albums[NM3DS_MAX_COVERFLOW_ALBUMS];
+    size_t coverflow_count;
+    int coverflow_selected;
 
     Song queue[NM3DS_MAX_QUEUE];
     bool queue_offline_playable[NM3DS_MAX_QUEUE];
@@ -258,7 +336,10 @@ typedef struct {
     int queue_selected;
     int current_queue;
     int pending_queue;
+    uint64_t playback_start_after_ms;
     int64_t extras_song_id;
+    int64_t extras_retry_song_id;
+    uint64_t extras_retry_after_ms;
     int64_t audio_cached_song_id;
     int64_t extras_cached_song_id;
     int64_t prefetch_anchor_song_id;
@@ -268,6 +349,10 @@ typedef struct {
     bool queue_replace_confirm;
     bool queue_replace_stay_on_page;
     Song queue_replace_song;
+    bool queue_remove_confirm;
+    int queue_remove_index;
+    int queue_remove_confirm_choice;
+    Song queue_remove_song;
     bool current_audio_is_trial;
     PlayMode play_mode;
     float volume;
@@ -282,10 +367,22 @@ typedef struct {
     size_t cache_audio_files;
     size_t cache_cover_files;
     size_t cache_lyric_files;
+    bool cache_stats_valid;
     int cache_limit_selected;
     int cache_limit_confirm_choice;
     int settings_selected;
+    SettingsInfoDialog settings_info_dialog;
     AppLanguage language;
+    ControlColorMode control_color_mode;
+    LyricAlignment lyric_alignment;
+    ImmersivePlaybackMode immersive_playback_mode;
+    uint32_t immersive_delay_seconds;
+    bool reduced_motion;
+    bool dark_theme;
+    bool immersive_active;
+    int64_t immersive_idle_song_id;
+    uint64_t immersive_idle_since_ms;
+    uint64_t immersive_gyro_ready_ms;
     bool debug_logging;
     bool dsp_firmware_prompt_open;
     uint32_t dsp_firmware_result;
@@ -293,6 +390,7 @@ typedef struct {
     bool account_open;
     LoginContinuation login_continuation;
     bool logged_in;
+    bool account_verified;
     bool wifi_connected;
     bool network_online;
     bool network_certificate_error;
@@ -312,10 +410,6 @@ typedef struct {
     LyricLine lyrics[NM3DS_MAX_LYRICS];
     size_t lyric_count;
     int64_t lyric_song_id;
-    bool immersive_lyrics;
-    ImmersiveLyricStyle immersive_lyric_style;
-    uint64_t immersive_controls_since_ms;
-
     char query[96];
     char status[192];
     AppMode mode;

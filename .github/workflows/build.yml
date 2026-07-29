@@ -29,7 +29,11 @@ jobs:
       - name: Install host test dependencies
         run: |
           apt-get update
-          apt-get install --yes --no-install-recommends zlib1g-dev
+          apt-get install --yes --no-install-recommends \
+            libjpeg-dev \
+            libmbedtls-dev \
+            libpng-dev \
+            zlib1g-dev
 
       - name: Resolve application version
         id: version

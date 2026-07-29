@@ -179,16 +179,24 @@ static void run_discover(NetworkWorker *worker, const WorkerJob *job,
 static void run_search(NetworkWorker *worker, const WorkerJob *job,
                        WorkerResult *result) {
     char error[192] = {0};
+    size_t page_size = search_category_page_size(job->search_category);
     worker_status(worker, "搜索中 · 第 %u 页",
-                  (unsigned int)(job->offset / NM3DS_MAX_RESULTS + 1));
+                  (unsigned int)(job->offset / page_size + 1));
     result->offset = job->offset;
-    if (netease_search(worker->client, job->query, job->offset,
-                       result->songs, NM3DS_MAX_RESULTS,
-                       &result->song_count, &result->has_more,
-                       error, sizeof(error)) != 0) {
+    result->search_category = job->search_category;
+    size_t count = 0;
+    if (netease_search_category(
+            worker->client, job->query, job->search_category, job->offset,
+            result->songs, result->search_items, page_size,
+            &count, &result->has_more, error, sizeof(error)) != 0) {
         finish_failure(worker, result, error);
         return;
     }
+    if (job->search_category == SEARCH_CATEGORY_SONG ||
+        job->search_category == SEARCH_CATEGORY_VOICE)
+        result->song_count = count;
+    else
+        result->search_item_count = count;
     result->success = true;
 }
 
@@ -269,6 +277,26 @@ static void run_album_tracks(NetworkWorker *worker, const WorkerJob *job,
                              &result->song_count, &result->has_more,
                              &result->album_track_total,
                              error, sizeof(error)) != 0) {
+        finish_failure(worker, result, error);
+        return;
+    }
+    result->success = true;
+}
+
+static void run_artist_tracks(NetworkWorker *worker, const WorkerJob *job,
+                              WorkerResult *result) {
+    char error[192] = {0};
+    result->artist_id = job->artist_id;
+    result->offset = job->offset;
+    worker_status(
+        worker, "正在读取歌手歌曲 · 第 %u 页",
+        (unsigned int)(job->offset / NM3DS_ALBUM_PAGE + 1));
+    if (netease_artist_tracks(
+            worker->client, job->artist_id, job->offset,
+            result->songs, NM3DS_ALBUM_PAGE,
+            &result->song_count, &result->has_more,
+            &result->album_track_total,
+            error, sizeof(error)) != 0) {
         finish_failure(worker, result, error);
         return;
     }
@@ -417,6 +445,27 @@ static void run_prepare_song(NetworkWorker *worker, const WorkerJob *job,
     char error[192] = {0};
     result->song_id = job->song.id;
     result->offline_playback = job->offline_playback;
+    /*
+     * Finish every first-use SD/network read before handing audio to the
+     * player.  Starting playback first and loading cover/lyrics afterwards
+     * can starve the decoder on slow 3DS SD cards.
+     */
+    if (prepare_song_cache_directory(job->song.id,
+                                     error, sizeof(error)) != 0 ||
+        load_song_extras(worker, job, result,
+                         error, sizeof(error)) != 0) {
+        finish_failure(worker, result,
+                       error[0] ? error : "无法访问歌曲缓存");
+        return;
+    }
+    if (worker_cancelled(worker)) {
+        finish_failure(worker, result, "请求已取消");
+        return;
+    }
+    result->song_extras_cached =
+        cache_song_has_asset(CACHE_ROOT, job->song.id, CACHE_ASSET_COVER) &&
+        cache_song_has_asset(CACHE_ROOT, job->song.id, CACHE_ASSET_LYRIC);
+
     if (!job->force_download) {
         CacheAudioType audio_type = job->offline_playback ?
             cache_song_offline_audio_type(
@@ -453,11 +502,6 @@ static void run_prepare_song(NetworkWorker *worker, const WorkerJob *job,
     result->audio_is_trial = playback.is_trial;
     CacheAudioType audio_type = playback.is_trial ? CACHE_AUDIO_TYPE_TRIAL :
                                                     CACHE_AUDIO_TYPE_FULL;
-    if (prepare_song_cache_directory(job->song.id,
-                                     error, sizeof(error)) != 0) {
-        finish_failure(worker, result, error);
-        return;
-    }
     if (!job->force_download &&
         cache_song_has_audio_type(CACHE_ROOT, job->song.id, audio_type)) {
         if (prepare_cached_audio(worker, job, result, audio_type,
@@ -743,7 +787,6 @@ static void run_login_check(NetworkWorker *worker, const WorkerJob *job,
 
 static void run_account(NetworkWorker *worker, WorkerResult *result) {
     char error[192] = {0};
-    worker_status(worker, "正在验证登录");
     if (netease_account(worker->client, error, sizeof(error)) != 0) {
         finish_failure(worker, result, error);
         return;
@@ -818,6 +861,9 @@ static void run_job(NetworkWorker *worker, const WorkerJob *job,
         case WORKER_JOB_ALBUM_TRACKS:
         case WORKER_JOB_ALBUM_ENQUEUE:
             run_album_tracks(worker, job, result);
+            break;
+        case WORKER_JOB_ARTIST_TRACKS:
+            run_artist_tracks(worker, job, result);
             break;
         case WORKER_JOB_SEARCH: run_search(worker, job, result); break;
         case WORKER_JOB_PREPARE_SONG:

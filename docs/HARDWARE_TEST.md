@@ -38,7 +38,12 @@ test rather than a substitute for Old 3DS timing and hardware behavior.
    keyboard labels use the fixed-menu Noto BCFNT, single ASCII keys use the 2x
    pixel font, candidates and committed input use the point renderer, up to
    nine candidates fit on one row, selection remains legible, and touching the
-   first and ninth candidate commits the expected word.
+   first and ninth candidate commits the expected word. Press `X`, cancel the
+   Nintendo system keyboard, and confirm the Chinese panel returns with its
+   committed text intact. Open it again and verify both an English query and,
+   on a Japanese-region system, hiragana, katakana and a predictive kanji
+   conversion can be submitted to Search. The system keyboard must not be
+   replaced by the local pinyin dictionary when entering English or Japanese.
 6. Check `hardware.log`: `heap_free`, `linear_free` and `vram_free` must remain
    comfortably above zero and must not continually fall after reopening the
    IME. `app_free` is the kernel application region and is not a substitute

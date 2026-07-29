@@ -1,5 +1,6 @@
 #include "netease.h"
 
+#include "lyric_parser.h"
 #include "eapi.h"
 #include "i18n.h"
 #include "json.h"
@@ -8,12 +9,10 @@
 #include "song_index.h"
 #include "song_text.h"
 #include "storage_paths.h"
-#include "unicode_text.h"
 #include "weapi.h"
 
 #include <3ds.h>
 
-#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -421,7 +420,11 @@ static int read_song_with_album_id(const JsonDoc *doc, int item, Song *song,
                                    int64_t *album_id) {
     if (!doc || item < 0 || !song) return -1;
     int wrapped = json_obj_get(doc, item, "song");
-    int object = wrapped >= 0 ? wrapped : item;
+    int base_info = json_obj_get(doc, item, "baseInfo");
+    int main_song =
+        base_info >= 0 ? json_obj_get(doc, base_info, "mainSong") : -1;
+    int object = main_song >= 0 ? main_song :
+                 wrapped >= 0 ? wrapped : item;
     memset(song, 0, sizeof(*song));
     if (json_i64(doc, json_obj_get(doc, object, "id"), &song->id) != 0)
         return -1;
@@ -673,7 +676,55 @@ int netease_search(NeteaseClient *client, const char *query,
                    size_t offset, Song *songs, size_t capacity,
                    size_t *count, bool *has_more,
                    char *error, size_t error_size) {
-    if (!client || !query || !songs || !count || capacity == 0) {
+    return netease_search_category(
+        client, query, SEARCH_CATEGORY_SONG, offset, songs, NULL,
+        capacity, count, has_more, error, error_size);
+}
+
+static int read_search_item(const JsonDoc *doc, int object,
+                            SearchCategory category,
+                            NeteaseSearchItem *item) {
+    if (!doc || object < 0 || !item) return -1;
+    memset(item, 0, sizeof(*item));
+    if (json_i64(doc, json_obj_get(doc, object, "id"), &item->id) != 0)
+        return -1;
+    read_string(doc, object, "name", item->title, sizeof(item->title),
+                category == SEARCH_CATEGORY_ARTIST ?
+                    "未知歌手" : "未知专辑");
+    if (category == SEARCH_CATEGORY_ALBUM) {
+        read_artists(doc, object, item->subtitle, sizeof(item->subtitle));
+        read_string(doc, object, "picUrl", item->pic_url,
+                    sizeof(item->pic_url), "");
+    } else {
+        int64_t music_count = 0;
+        int64_t album_count = 0;
+        (void)json_i64(doc, json_obj_get(doc, object, "musicSize"),
+                       &music_count);
+        (void)json_i64(doc, json_obj_get(doc, object, "albumSize"),
+                       &album_count);
+        i18n_snprintf(
+            item->subtitle, sizeof(item->subtitle),
+            "%u 首歌曲 · %u 张专辑",
+            (unsigned int)(music_count > 0 ? music_count : 0),
+            (unsigned int)(album_count > 0 ? album_count : 0));
+        read_string(doc, object, "picUrl", item->pic_url,
+                    sizeof(item->pic_url), "");
+        if (!item->pic_url[0])
+            read_string(doc, object, "img1v1Url", item->pic_url,
+                        sizeof(item->pic_url), "");
+    }
+    return 0;
+}
+
+int netease_search_category(
+    NeteaseClient *client, const char *query, SearchCategory category,
+    size_t offset, Song *songs, NeteaseSearchItem *items, size_t capacity,
+    size_t *count, bool *has_more, char *error, size_t error_size) {
+    bool song_results = category == SEARCH_CATEGORY_SONG ||
+                        category == SEARCH_CATEGORY_VOICE;
+    if (!client || !query || !count || capacity == 0 ||
+        (unsigned int)category >= SEARCH_CATEGORY_COUNT ||
+        (song_results ? songs == NULL : items == NULL)) {
         set_error(error, error_size, "搜索请求无效");
         return -1;
     }
@@ -690,16 +741,32 @@ int netease_search(NeteaseClient *client, const char *query,
         return -1;
     }
     char payload[EAPI_PAYLOAD_CAPACITY];
-    int length = snprintf(payload, sizeof(payload),
-        "{\"s\":\"%s\",\"type\":1,\"offset\":%u,"
-        "\"total\":\"true\",\"limit\":%u,%s}",
-        escaped, (unsigned int)offset, (unsigned int)capacity, header);
+    static const unsigned int search_types[SEARCH_CATEGORY_COUNT] = {
+        1U, 100U, 10U, 2000U
+    };
+    int length;
+    if (category == SEARCH_CATEGORY_VOICE)
+        length = snprintf(payload, sizeof(payload),
+            "{\"keyword\":\"%s\",\"scene\":\"normal\",\"offset\":%u,"
+            "\"limit\":%u,%s}",
+            escaped, (unsigned int)offset, (unsigned int)capacity, header);
+    else
+        length = snprintf(payload, sizeof(payload),
+            "{\"s\":\"%s\",\"type\":%u,\"offset\":%u,"
+            "\"total\":\"true\",\"limit\":%u,%s}",
+            escaped, search_types[category], (unsigned int)offset,
+            (unsigned int)capacity, header);
     if (length < 0 || (size_t)length >= sizeof(payload)) {
         set_error(error, error_size, "搜索请求过大");
         return -1;
     }
     char *json = NULL;
-    if (api_request(client, "/api/search/get", "search/get", payload,
+    const char *request_path = category == SEARCH_CATEGORY_VOICE ?
+                               "/api/search/voice/get" :
+                               "/api/search/get";
+    const char *eapi_path = category == SEARCH_CATEGORY_VOICE ?
+                            "search/voice/get" : "search/get";
+    if (api_request(client, request_path, eapi_path, payload,
                     &json, error, error_size) != 0) return -1;
 
     JsonDoc doc;
@@ -708,8 +775,14 @@ int netease_search(NeteaseClient *client, const char *query,
         free(json);
         return -1;
     }
-    int result = json_obj_get(&doc, 0, "result");
-    int array = result >= 0 ? json_obj_get(&doc, result, "songs") : -1;
+    int result = json_obj_get(
+        &doc, 0,
+        category == SEARCH_CATEGORY_VOICE ? "data" : "result");
+    static const char *array_keys[SEARCH_CATEGORY_COUNT] = {
+        "songs", "artists", "albums", "resources"
+    };
+    int array = result >= 0 ?
+                json_obj_get(&doc, result, array_keys[category]) : -1;
     if (array < 0 || doc.tokens[array].type != JSON_ARRAY) {
         response_error(&doc, error, error_size);
         free(tokens);
@@ -719,13 +792,20 @@ int netease_search(NeteaseClient *client, const char *query,
     int available = json_arr_size(&doc, array);
     if ((size_t)available > capacity) available = (int)capacity;
     for (int i = 0; i < available; i++) {
-        int item = json_arr_get(&doc, array, i);
-        Song *song = &songs[*count];
-        if (read_song(&doc, item, song) != 0) continue;
+        int object = json_arr_get(&doc, array, i);
+        int parsed = song_results ?
+            read_song(&doc, object, &songs[*count]) :
+            read_search_item(
+                &doc, object, category, &items[*count]);
+        if (parsed != 0) continue;
         (*count)++;
     }
     int64_t total = 0;
-    int total_token = result >= 0 ? json_obj_get(&doc, result, "songCount") : -1;
+    static const char *count_keys[SEARCH_CATEGORY_COUNT] = {
+        "songCount", "artistCount", "albumCount", "totalCount"
+    };
+    int total_token = result >= 0 ?
+                      json_obj_get(&doc, result, count_keys[category]) : -1;
     if (has_more) {
         if (total_token >= 0 && json_i64(&doc, total_token, &total) == 0)
             *has_more = offset + *count < (size_t)total;
@@ -733,10 +813,6 @@ int netease_search(NeteaseClient *client, const char *query,
     }
     free(tokens);
     free(json);
-    if (*count == 0) {
-        set_error(error, error_size, "没有找到歌曲");
-        return -1;
-    }
     return 0;
 }
 
@@ -1158,6 +1234,76 @@ int netease_album_tracks(NeteaseClient *client, int64_t album_id,
     return 0;
 }
 
+int netease_artist_tracks(NeteaseClient *client, int64_t artist_id,
+                          size_t offset, Song *songs, size_t capacity,
+                          size_t *count, bool *has_more,
+                          size_t *total_count,
+                          char *error, size_t error_size) {
+    if (!client || artist_id <= 0 || !songs || capacity == 0 ||
+        !count || !has_more || !total_count) {
+        set_error(error, error_size, "歌手歌曲请求无效");
+        return -1;
+    }
+    if (capacity > NM3DS_ALBUM_PAGE) capacity = NM3DS_ALBUM_PAGE;
+    *count = 0;
+    *has_more = false;
+    *total_count = 0;
+    char header[EAPI_HEADER_CAPACITY];
+    if (append_header(client, header, sizeof(header)) < 0) {
+        set_error(error, error_size, "无法构建请求头");
+        return -1;
+    }
+    char payload[EAPI_PAYLOAD_CAPACITY];
+    int length = snprintf(
+        payload, sizeof(payload),
+        "{\"id\":\"%lld\",\"private_cloud\":\"true\","
+        "\"work_type\":1,\"order\":\"hot\",\"offset\":%u,"
+        "\"limit\":%u,%s}",
+        (long long)artist_id, (unsigned int)offset,
+        (unsigned int)capacity, header);
+    if (length < 0 || (size_t)length >= sizeof(payload)) {
+        set_error(error, error_size, "歌手歌曲请求过大");
+        return -1;
+    }
+    char *json = NULL;
+    if (api_request(client, "/api/v1/artist/songs", "v1/artist/songs",
+                    payload, &json, error, error_size) != 0)
+        return -1;
+    JsonDoc doc;
+    JsonToken *tokens = NULL;
+    if (parse_doc(json, &doc, &tokens, error, error_size) != 0) {
+        free(json);
+        return -1;
+    }
+    int array = json_obj_get(&doc, 0, "songs");
+    if (array < 0 || doc.tokens[array].type != JSON_ARRAY) {
+        response_error(&doc, error, error_size);
+        free(tokens);
+        free(json);
+        return -1;
+    }
+    int available = json_arr_size(&doc, array);
+    if ((size_t)available > capacity) available = (int)capacity;
+    for (int index = 0; index < available; index++) {
+        int object = json_arr_get(&doc, array, index);
+        if (read_song(&doc, object, &songs[*count]) == 0) (*count)++;
+    }
+    int64_t total = 0;
+    if (json_i64(&doc, json_obj_get(&doc, 0, "total"), &total) == 0 &&
+        total > 0)
+        *total_count = (size_t)total;
+    else
+        *total_count = offset + *count;
+    *has_more = offset + *count < *total_count;
+    free(tokens);
+    free(json);
+    if (*count == 0) {
+        set_error(error, error_size, "歌手本页没有歌曲");
+        return -1;
+    }
+    return 0;
+}
+
 int netease_login_qr_key(NeteaseClient *client, char *key, size_t key_size,
                          char *error, size_t error_size) {
     if (!client || !key || key_size == 0) {
@@ -1324,44 +1470,6 @@ int netease_account(NeteaseClient *client,
     return 0;
 }
 
-static int parse_lrc_time(const char *tag, uint32_t *time_ms) {
-    if (!tag || !time_ms || !isdigit((unsigned char)tag[0])) return -1;
-    char *end = NULL;
-    long minutes = strtol(tag, &end, 10);
-    if (!end || *end != ':' || minutes < 0) return -1;
-    char *seconds_end = NULL;
-    double seconds = strtod(end + 1, &seconds_end);
-    if (!seconds_end || *seconds_end != ']' || seconds < 0.0 || seconds >= 60.0)
-        return -1;
-    double total = ((double)minutes * 60.0 + seconds) * 1000.0;
-    if (total < 0.0 || total > 4294967295.0) return -1;
-    *time_ms = (uint32_t)(total + 0.5);
-    return 0;
-}
-
-static size_t parse_lrc(char *lrc, LyricLine *lines, size_t capacity) {
-    size_t count = 0;
-    char *save = NULL;
-    for (char *line = strtok_r(lrc, "\r\n", &save);
-         line && count < capacity;
-         line = strtok_r(NULL, "\r\n", &save)) {
-        if (line[0] != '[') continue;
-        char *close = strchr(line, ']');
-        if (!close || !close[1]) continue;
-        uint32_t time_ms;
-        if (parse_lrc_time(line + 1, &time_ms) != 0) continue;
-        const char *text = close + 1;
-        while (*text == ' ' || *text == '\t') text++;
-        if (!*text) continue;
-        (void)utf8_compose_hangul_nfc((char *)text);
-        lines[count].time_ms = time_ms;
-        (void)utf8_copy_truncated(lines[count].text,
-                                  sizeof(lines[count].text), text);
-        count++;
-    }
-    return count;
-}
-
 int netease_lyrics(NeteaseClient *client, int64_t song_id,
                    LyricLine *lines, size_t capacity,
                    size_t *count, char *error, size_t error_size) {
@@ -1401,7 +1509,7 @@ int netease_lyrics(NeteaseClient *client, int64_t song_id,
         set_error(error, error_size, "歌词不可用");
         return -1;
     }
-    *count = parse_lrc(lrc, lines, capacity);
+    *count = lyric_parse_lrc(lrc, lines, capacity);
     free(lrc);
     free(tokens);
     free(body);
