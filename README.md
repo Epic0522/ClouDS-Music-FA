@@ -9,18 +9,32 @@
 </p>
 
 <p align="center">
-  在线播放 · 动态歌词 · 离线缓存 · Cover Flow · 动态 3D Banner
+  <img src="https://img.shields.io/badge/-%E5%9C%A8%E7%BA%BF%E6%92%AD%E6%94%BE-4EACC4"
+       alt="在线播放">
+  <img src="https://img.shields.io/badge/-%E5%8A%A8%E6%80%81%E6%AD%8C%E8%AF%8D-9B7BD3"
+       alt="动态歌词">
+  <img src="https://img.shields.io/badge/-%E7%A6%BB%E7%BA%BF%E7%BC%93%E5%AD%98-E3A545"
+       alt="离线缓存">
+  <img src="https://img.shields.io/badge/-Cover%20Flow-688ED2"
+       alt="Cover Flow">
+  <img src="https://img.shields.io/badge/-%E5%8A%A8%E6%80%81%203D%20Banner-E56E82"
+       alt="动态 3D Banner">
 </p>
 
 <p align="center">
-  <sub>FA branch · Version 2.0.0 · Nintendo 3DS</sub>
+  <img src="https://img.shields.io/badge/FA%20branch-clouds--music--fa-6C6C6C"
+       alt="FA branch">
+  <img src="https://img.shields.io/badge/version-2.0.0-2F7DCC"
+       alt="Version 2.0.0">
+  <img src="https://img.shields.io/badge/platform-Nintendo%203DS-D94848"
+       alt="Nintendo 3DS">
 </p>
 
 <p align="center">
   <img src="docs/screenshots/fa-hardware-hero.jpg"
-       alt="ClouDS Music FA 在 Nintendo 3DS 实机上运行" width="49%">
+       alt="ClouDS Music FA 在 Nintendo 3DS 实机上运行" height="420">
   <img src="docs/screenshots/fa-player-lyrics.png"
-       alt="ClouDS Music FA 正在播放与动态歌词" width="49%">
+       alt="ClouDS Music FA 正在播放与动态歌词" height="420">
 </p>
 
 ClouDS Music FA 是一个原生 Nintendo 3DS 云音乐客户端。它保留了原项目的
