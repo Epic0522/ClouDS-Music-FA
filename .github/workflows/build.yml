@@ -33,6 +33,7 @@ jobs:
             libjpeg-dev \
             libmbedtls-dev \
             libpng-dev \
+            python3-pil \
             zlib1g-dev
 
       - name: Resolve application version

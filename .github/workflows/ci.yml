@@ -30,6 +30,7 @@ jobs:
             libjpeg-dev \
             libmbedtls-dev \
             libpng-dev \
+            python3-pil \
             zlib1g-dev
 
       - name: Run host-side tests
