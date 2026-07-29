@@ -16,23 +16,36 @@
   <sub>FA branch · Version 2.0.0 · Nintendo 3DS</sub>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/fa-hardware-hero.jpg"
+       alt="ClouDS Music FA 在 Nintendo 3DS 实机上运行" width="760">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/fa-player-lyrics.png"
+       alt="ClouDS Music FA 正在播放与动态歌词" width="620">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/fa-lyrics-detail.png"
+       alt="多行动态歌词、渐进模糊与实时频谱" width="49%">
+  <img src="docs/screenshots/fa-home-banner.png"
+       alt="ClouDS Music FA 动态 3D HOME Menu Banner" width="49%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/fa-coverflow.png"
+       alt="循环 3D Cover Flow" width="49%">
+  <img src="docs/screenshots/fa-immersive-dark.png"
+       alt="深色模式下的沉浸式播放" width="49%">
+</p>
+
 ClouDS Music FA 是一个原生 Nintendo 3DS 云音乐客户端。它保留了原项目的
 在线音乐能力，并从双屏交互、歌词、视觉系统、缓存和 HOME Menu 展示开始，以简洁的
 Flat Aero风格完全重做。
 
 > 本项目不是云音乐或 Nintendo 的官方产品。服务依赖非公开接口，未来可能因
 > 接口变化而暂时不可用；项目不会绕过 VIP、地区、购买或下架限制。
-
-<!--
-HERO SCREENSHOT
-将双屏正在播放截图保存为：
-docs/screenshots/fa-player-lyrics.png
-
-<p align="center">
-  <img src="docs/screenshots/fa-player-lyrics.png"
-       alt="ClouDS Music FA 正在播放与动态歌词" width="760">
-</p>
--->
 
 FA 分支建立在 [cadl/ClouDS-Music](https://github.com/cadl/ClouDS-Music) 的网络、
 解码与服务基础之上。
@@ -78,18 +91,6 @@ FA 分支建立在 [cadl/ClouDS-Music](https://github.com/cadl/ClouDS-Music) 的
 - 支持靠左或居中排列，切换和长句重新排版都有连续过渡
 - 支持裸眼 3D 视差
 
-
-<!--
-LYRICS SCREENSHOT
-将一张包含双行激活歌词、远端模糊和频谱的上屏截图保存为：
-docs/screenshots/fa-lyrics-detail.png
-
-<p align="center">
-  <img src="docs/screenshots/fa-lyrics-detail.png"
-       alt="多行动态歌词、渐进模糊与实时频谱" width="760">
-</p>
--->
-
 ## 🔊声音也会驱动画面
 
 ClouDS Music FA 提供四种可视化状态：
@@ -125,23 +126,6 @@ ClouDS Music FA 提供四种可视化状态：
 ### Cover Flow
 
 点击播放器中的专辑封面即可进入 Cover Flow。播放列表会按专辑自动合并，封面以真正的 3D 透视角度向画面内侧折转，并进行循环队列排列。选择封面后进入专辑详情。
-
-<!--
-FEATURE SCREENSHOTS
-请分别保存：
-docs/screenshots/fa-coverflow.png
-docs/screenshots/fa-immersive-dark.png
-
-<p align="center">
-  <img src="docs/screenshots/fa-coverflow.png"
-       alt="循环 3D Cover Flow" width="49%">
-  <img src="docs/screenshots/fa-immersive-dark.png"
-       alt="深色模式下的沉浸式播放" width="49%">
-</p>
--->
-
-
-
 
 ## 🏴真正的动态 3D Banner
 
@@ -429,17 +413,6 @@ banner_3d/logo-source-256x128.png
 banner_3d/audio.wav
 banner_3d/banner.cgfx
 ```
-
-<!--
-BANNER SCREENSHOT
-请将 HOME Menu 正面动态 Banner 截图保存为：
-docs/screenshots/fa-home-banner.png
-
-<p align="center">
-  <img src="docs/screenshots/fa-home-banner.png"
-       alt="ClouDS Music FA 动态 3D HOME Menu Banner" width="760">
-</p>
--->
 
 ## ⬇️下载与安装
 
