@@ -161,40 +161,35 @@ def button_glow_layer(width: int, height: int,
 def frosted_panel(width: int, height: int,
                   dark: bool = False) -> Image.Image:
     target_size = (width, height)
-    aa = SUPERSAMPLE
+    # The 512x256 panel is scaled much farther than the smaller atlas tiles.
+    # Four samples left a one-pixel notch in the light shadow on real panels,
+    # so keep this asset at the same eight-sample precision as the dark skin.
+    aa = max(SUPERSAMPLE, 8)
     width *= aa
     height *= aa
-    randomizer = random.Random(0xFA01)
-    low_frequency = Image.new("L", (32, 16))
-    low_pixels = low_frequency.load()
-    for y in range(low_frequency.height):
-        for x in range(low_frequency.width):
-            low_pixels[x, y] = randomizer.randint(70, 190)
-    low_frequency = low_frequency.resize(
-        (width, height), Image.Resampling.BICUBIC
-    ).filter(ImageFilter.GaussianBlur(radius=7.0 * aa))
 
     material = Image.new("RGBA", (width, height))
     pixels = material.load()
-    frost = low_frequency.load()
     for y in range(height):
         vertical = y / max(1, height - 1)
         for x in range(width):
-            haze = (frost[x, y] - 128) // 11
             if dark:
                 pixels[x, y] = (
-                    max(0, min(255, 92 + haze - int(vertical * 31))),
-                    max(0, min(255, 98 + haze - int(vertical * 32))),
-                    max(0, min(255, 101 + haze - int(vertical * 32))),
+                    max(0, min(255, 92 - int(vertical * 31))),
+                    max(0, min(255, 98 - int(vertical * 32))),
+                    max(0, min(255, 101 - int(vertical * 32))),
                     246,
                 )
             else:
                 pixels[x, y] = (
-                    max(0, min(255, 246 + haze - int(vertical * 10))),
-                    max(0, min(255, 245 + haze - int(vertical * 10))),
-                    max(0, min(255, 233 + haze - int(vertical * 8))),
+                    max(0, min(255, 246 - int(vertical * 10))),
+                    max(0, min(255, 245 - int(vertical * 10))),
+                    max(0, min(255, 233 - int(vertical * 8))),
                     238,
                 )
+    # Keep the large control's material spatially uniform.  A previous
+    # low-frequency random field looked softly frosted on an emulator, but
+    # became watermark-like blotches after scaling on a 3DS LL panel.
     material = add_fine_grain(material, 2, 0xFA02)
     panel = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     inset = 12 * aa
@@ -937,17 +932,38 @@ def build_atlas(output: Path, dark: bool = False) -> None:
     atlas.save(output, optimize=True)
 
 
+def refresh_panel(output: Path, dark: bool = False) -> None:
+    """Replace only the large panel while preserving hand-tuned atlas pixels."""
+    with Image.open(output) as source:
+        atlas = source.convert("RGBA")
+    if atlas.size != (ATLAS_SIZE, ATLAS_SIZE):
+        raise ValueError(
+            f"{output} must be a {ATLAS_SIZE}x{ATLAS_SIZE} atlas"
+        )
+    panel = frosted_panel(512, 256, dark=dark)
+    atlas.paste(panel, (0, 0), panel)
+    atlas.save(output, optimize=True)
+
+
 def main() -> None:
     global SUPERSAMPLE
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--dark", action="store_true")
+    parser.add_argument(
+        "--panel-only",
+        action="store_true",
+        help="refresh only the 512x256 panel and preserve the rest of the atlas",
+    )
     args = parser.parse_args()
     if args.dark:
         # Dark rims expose pixel stair-steps much more readily than the pale
         # material, so render this variant at twice the linear resolution.
         SUPERSAMPLE = 8
-    build_atlas(args.output, dark=args.dark)
+    if args.panel_only:
+        refresh_panel(args.output, dark=args.dark)
+    else:
+        build_atlas(args.output, dark=args.dark)
 
 
 if __name__ == "__main__":

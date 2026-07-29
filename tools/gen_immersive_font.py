@@ -162,6 +162,18 @@ def shift_alphabetic_baseline(
     return shifted
 
 
+def glyph_origin_x(font: ImageFont.FreeTypeFont, char: str) -> int:
+    """Keep glyphs with a negative left bearing inside their bitmap cell.
+
+    FreeType positions a few alphabetic glyphs (notably lowercase ``j``)
+    slightly to the left of the pen origin.  Drawing at x=0 therefore clips
+    the hook before the bitmap reaches the 3DS renderer.  Compensating only
+    for a negative bearing preserves the normal metrics of every other glyph.
+    """
+    left, _top, _right, _bottom = font.getbbox(char, anchor="ls")
+    return max(0, -left)
+
+
 def load_font(path: Path, pixels: int,
               weight: float) -> ImageFont.FreeTypeFont:
     font = ImageFont.truetype(str(path), pixels)
@@ -194,7 +206,7 @@ def render_glyph(font: ImageFont.FreeTypeFont,
     image = Image.new("L" if alpha_bits == 2 else "1",
                       (width, height), 0)
     draw = ImageDraw.Draw(image)
-    draw.text((0, baseline), char, font=font,
+    draw.text((glyph_origin_x(font, char), baseline), char, font=font,
               fill=255 if alpha_bits == 2 else 1, anchor="ls")
     image = align_japanese_visible_bottom(
         image, codepoint, japanese_visible_bottom)

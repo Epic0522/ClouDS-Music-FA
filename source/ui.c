@@ -4444,32 +4444,119 @@ static void draw_transport_icon(float center, float y, bool next,
                       0.7f, 3, 20, color);
 }
 
+typedef enum {
+    CONTROL_ICON_SEQUENCE = 0,
+    CONTROL_ICON_REPEAT_ONE,
+    CONTROL_ICON_SHUFFLE,
+    CONTROL_ICON_OSCILLOSCOPE,
+    CONTROL_ICON_SPECTRUM,
+    CONTROL_ICON_LEVELS,
+    CONTROL_ICON_HIDDEN,
+    CONTROL_ICON_COUNT
+} ControlIcon;
+
+static const uint16_t CONTROL_ICON_PIXELS[CONTROL_ICON_COUNT][16] = {
+    /* Sequence */
+    {
+        0x0000, 0x0000, 0x03c0, 0x0c00,
+        0x1004, 0x100c, 0x2014, 0x2004,
+        0x2004, 0x2804, 0x3008, 0x2008,
+        0x0030, 0x03c0, 0x0000, 0x0000
+    },
+    /* Repeat one */
+    {
+        0x0000, 0x0000, 0x03c0, 0x0c30,
+        0x1008, 0x1088, 0x2184, 0x2084,
+        0x2094, 0x208c, 0x1084, 0x1000,
+        0x0c30, 0x03c0, 0x0000, 0x0000
+    },
+    /* Shuffle */
+    {
+        0x0000, 0x0000, 0x0000, 0x3810,
+        0x0408, 0x023c, 0x0148, 0x0080,
+        0x0080, 0x0148, 0x023c, 0x0408,
+        0x3810, 0x0000, 0x0000, 0x0000
+    },
+    /* Oscilloscope */
+    {
+        0x0000, 0x0000, 0x0000, 0x0000,
+        0x1008, 0x2814, 0x4422, 0x4422,
+        0x0420, 0x0240, 0x0240, 0x0180,
+        0x0000, 0x0000, 0x0000, 0x0000
+    },
+    /* Spectrum */
+    {
+        0x0000, 0x0180, 0x0180, 0x0180,
+        0x0180, 0x0d80, 0x0d80, 0x0db0,
+        0x0db0, 0x0db0, 0x6db0, 0x6db6,
+        0x6db6, 0x6db6, 0x6db6, 0x0000
+    },
+    /* Levels */
+    {
+        0x0000, 0x0000, 0x0000, 0x6666,
+        0x6666, 0x6666, 0x0000, 0x0000,
+        0x0000, 0x0000, 0x6660, 0x6660,
+        0x6660, 0x0000, 0x0000, 0x0000
+    },
+    /* Hidden */
+    {
+        0x0000, 0x0000, 0x3800, 0x3f1c,
+        0x38fc, 0x101c, 0x1008, 0x1008,
+        0x2008, 0x2004, 0x200e, 0x73fe,
+        0x7c0e, 0x7000, 0x0000, 0x0000
+    }
+};
+
+static void draw_control_icon_pixels(float center_x, float center_y,
+                                     ControlIcon icon, u32 color) {
+    if (icon >= CONTROL_ICON_COUNT) return;
+    const uint16_t *rows = CONTROL_ICON_PIXELS[icon];
+    int min_x = 16;
+    int min_y = 16;
+    int max_x = -1;
+    int max_y = -1;
+    for (int y = 0; y < 16; y++) {
+        for (int x = 0; x < 16; x++) {
+            if ((rows[y] & (uint16_t)(1U << (15 - x))) == 0U) continue;
+            if (x < min_x) min_x = x;
+            if (x > max_x) max_x = x;
+            if (y < min_y) min_y = y;
+            if (y > max_y) max_y = y;
+        }
+    }
+    if (max_x < min_x || max_y < min_y) return;
+
+    int occupied_width = max_x - min_x + 1;
+    int occupied_height = max_y - min_y + 1;
+    float origin_x = floorf(center_x - occupied_width * 0.5f) - min_x;
+    float origin_y = floorf(center_y - occupied_height * 0.5f) - min_y;
+    for (int y = min_y; y <= max_y; y++) {
+        for (int x = min_x; x <= max_x; x++) {
+            if ((rows[y] & (uint16_t)(1U << (15 - x))) == 0U) continue;
+            C2D_DrawRectSolid(
+                origin_x + x, origin_y + y, 0.72f,
+                1.0f, 1.0f, color);
+        }
+    }
+}
+
 static void draw_mode_icon(float center_x, float center_y,
                            PlayMode mode, u32 color) {
-    UiSkinAsset asset = UI_SKIN_MODE_SEQUENCE;
-    if (mode == PLAY_MODE_REPEAT_ONE)
-        asset = UI_SKIN_MODE_REPEAT_ONE;
-    else if (mode == PLAY_MODE_SHUFFLE)
-        asset = UI_SKIN_MODE_SHUFFLE;
-    (void)ui_skin_draw_runtime_mask(
-        g_active_skin, asset,
-        center_x - 11.0f, center_y - 11.0f, 0.72f,
-        22.0f, 22.0f, color);
+    ControlIcon icon =
+        mode == PLAY_MODE_REPEAT_ONE ? CONTROL_ICON_REPEAT_ONE :
+        mode == PLAY_MODE_SHUFFLE ? CONTROL_ICON_SHUFFLE :
+        CONTROL_ICON_SEQUENCE;
+    draw_control_icon_pixels(center_x, center_y, icon, color);
 }
 
 static void draw_visualizer_icon(float center_x, float center_y,
                                  VisualizerMode mode, u32 color) {
-    UiSkinAsset asset = UI_SKIN_VISUALIZER_SCOPE;
-    if (mode == VISUALIZER_SPECTRUM)
-        asset = UI_SKIN_VISUALIZER_SPECTRUM;
-    else if (mode == VISUALIZER_LEVELS)
-        asset = UI_SKIN_VISUALIZER_LEVELS;
-    else if (mode == VISUALIZER_NONE)
-        asset = UI_SKIN_VISUALIZER_NONE;
-    (void)ui_skin_draw_runtime_mask(
-        g_active_skin, asset,
-        center_x - 11.0f, center_y - 11.0f, 0.72f,
-        22.0f, 22.0f, color);
+    ControlIcon icon =
+        mode == VISUALIZER_SPECTRUM ? CONTROL_ICON_SPECTRUM :
+        mode == VISUALIZER_LEVELS ? CONTROL_ICON_LEVELS :
+        mode == VISUALIZER_NONE ? CONTROL_ICON_HIDDEN :
+        CONTROL_ICON_OSCILLOSCOPE;
+    draw_control_icon_pixels(center_x, center_y, icon, color);
 }
 
 static void draw_play_icon(float x, float y, float w, float h,

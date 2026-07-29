@@ -105,6 +105,24 @@ class JapaneseGlyphFootAlignmentTests(unittest.TestCase):
                     image, ord(char), 1)
                 self.assertEqual(shifted.getbbox(), image.getbbox())
 
+    def test_negative_left_bearing_is_kept_inside_the_cell(self):
+        class Font:
+            @staticmethod
+            def getbbox(_char, anchor):
+                self.assertEqual(anchor, "ls")
+                return (-2, -12, 6, 4)
+
+        self.assertEqual(MODULE.glyph_origin_x(Font(), "j"), 2)
+
+    def test_nonnegative_left_bearing_keeps_the_native_origin(self):
+        class Font:
+            @staticmethod
+            def getbbox(_char, anchor):
+                self.assertEqual(anchor, "ls")
+                return (1, -12, 9, 0)
+
+        self.assertEqual(MODULE.glyph_origin_x(Font(), "K"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
