@@ -18,26 +18,9 @@
 
 <p align="center">
   <img src="docs/screenshots/fa-hardware-hero.jpg"
-       alt="ClouDS Music FA 在 Nintendo 3DS 实机上运行" width="760">
-</p>
-
-<p align="center">
+       alt="ClouDS Music FA 在 Nintendo 3DS 实机上运行" width="49%">
   <img src="docs/screenshots/fa-player-lyrics.png"
-       alt="ClouDS Music FA 正在播放与动态歌词" width="620">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/fa-lyrics-detail.png"
-       alt="多行动态歌词、渐进模糊与实时频谱" width="49%">
-  <img src="docs/screenshots/fa-home-banner.png"
-       alt="ClouDS Music FA 动态 3D HOME Menu Banner" width="49%">
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/fa-coverflow.png"
-       alt="循环 3D Cover Flow" width="49%">
-  <img src="docs/screenshots/fa-immersive-dark.png"
-       alt="深色模式下的沉浸式播放" width="49%">
+       alt="ClouDS Music FA 正在播放与动态歌词" width="49%">
 </p>
 
 ClouDS Music FA 是一个原生 Nintendo 3DS 云音乐客户端。它保留了原项目的
@@ -80,6 +63,11 @@ FA 分支建立在 [cadl/ClouDS-Music](https://github.com/cadl/ClouDS-Music) 的
 
 ## 💭歌词，不只是字幕
 
+<p align="center">
+  <img src="docs/screenshots/fa-lyrics-detail.png"
+       alt="多行动态歌词、渐进模糊与实时频谱" width="520">
+</p>
+
 上屏使用一套为 3DS 重新实现的 Apple Music 风格动态歌词系统。
 
 - 当前歌词、候选歌词和离场歌词组成逐行弹簧队列
@@ -120,14 +108,29 @@ ClouDS Music FA 提供四种可视化状态：
 
 ### 沉浸式播放
 
+<p align="center">
+  <img src="docs/screenshots/fa-immersive-dark.png"
+       alt="深色模式下的沉浸式播放" width="520">
+</p>
+
 经过设定时间没有操作后，下屏控件会平滑退场，只留下放大的专辑封面、歌曲名与歌手名。
 无论自动沉浸是否开启，都可以按 `Y` 手动进入。任意按键或明显的主机晃动会退出沉浸。
 
 ### Cover Flow
 
+<p align="center">
+  <img src="docs/screenshots/fa-coverflow.png"
+       alt="循环 3D Cover Flow" width="520">
+</p>
+
 点击播放器中的专辑封面即可进入 Cover Flow。播放列表会按专辑自动合并，封面以真正的 3D 透视角度向画面内侧折转，并进行循环队列排列。选择封面后进入专辑详情。
 
 ## 🏴真正的动态 3D Banner
+
+<p align="center">
+  <img src="docs/screenshots/fa-home-banner.png"
+       alt="ClouDS Music FA 动态 3D HOME Menu Banner" width="520">
+</p>
 
 - 主模型会按节奏上下律动并轻微左右摇摆
 - HOME Menu 可正常旋转主模型
