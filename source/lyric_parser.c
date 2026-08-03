@@ -1,3 +1,7 @@
+#ifndef __3DS__
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "lyric_parser.h"
 
 #include "unicode_text.h"
@@ -121,4 +125,27 @@ size_t lyric_parse_lrc(char *lrc, LyricLine *lines, size_t capacity) {
         count++;
     }
     return count;
+}
+
+void lyric_merge_translation_lrc(char *lrc, LyricLine *lines, size_t count) {
+    if (!lrc || !lines || count == 0U) return;
+    char *save = NULL;
+    for (char *line = strtok_r(lrc, "\r\n", &save); line;
+         line = strtok_r(NULL, "\r\n", &save)) {
+        if (line[0] != '[') continue;
+        char *close = strchr(line, ']');
+        if (!close || !close[1]) continue;
+        uint32_t time_ms = 0U;
+        if (parse_lrc_time(line + 1, &time_ms) != 0) continue;
+        char *text = close + 1;
+        while (*text == ' ' || *text == '\t') text++;
+        if (!text[0]) continue;
+        for (size_t i = 0; i < count; i++) {
+            if (lines[i].time_ms != time_ms) continue;
+            (void)utf8_compose_hangul_nfc(text);
+            (void)utf8_copy_truncated(lines[i].translation,
+                                      sizeof(lines[i].translation), text);
+            break;
+        }
+    }
 }

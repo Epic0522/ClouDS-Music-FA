@@ -493,6 +493,21 @@ make emulator-build
 make cia-build
 ```
 
+### Windows
+
+Windows 上只需安装并启动 Docker Desktop，不需要另外配置宿主机 `make`、Python 或
+devkitARM。仓库提供的 PowerShell 入口会初始化子模块，并使用与 CI 相同、按摘要固定的
+devkitARM 镜像：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\windows-build.ps1 -Target setup
+powershell -ExecutionPolicy Bypass -File .\tools\windows-build.ps1 -Target test
+powershell -ExecutionPolicy Bypass -File .\tools\windows-build.ps1 -Target 3dsx
+```
+
+`-Target cia` 构建 CIA，`-Target old3ds` 构建 Old 3DS 内存压力版本，`-Target all`
+依次运行仓库检查、主机测试和 3DSX 构建。构建产物仍写入仓库根目录。
+
 `make cia-build` 会使用 `banner_3d/banner.cgfx` 与 `banner_3d/audio.wav` 生成包含
 Extended Banner 的 CIA。Banner 的可编辑源文件与转换工具位于：
 

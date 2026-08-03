@@ -155,6 +155,9 @@ int main(void) {
            UI_SETTINGS_LYRIC_ALIGNMENT_Y);
     assert(UI_SETTINGS_LYRIC_ALIGNMENT_Y +
                UI_SETTINGS_LYRIC_ALIGNMENT_HEIGHT <=
+           UI_SETTINGS_LYRIC_TRANSLATION_Y);
+    assert(UI_SETTINGS_LYRIC_TRANSLATION_Y +
+               UI_SETTINGS_LYRIC_TRANSLATION_HEIGHT <=
            UI_SETTINGS_IMMERSIVE_Y);
     assert(UI_SETTINGS_IMMERSIVE_Y +
                UI_SETTINGS_IMMERSIVE_HEIGHT <=
@@ -186,12 +189,13 @@ int main(void) {
     assert(UI_SETTINGS_CONTENT_BOTTOM >
            UI_TOP_SCREEN_HEIGHT);
 
-    assert(SETTINGS_ITEM_COUNT == 13);
+    assert(SETTINGS_ITEM_COUNT == 14);
     assert(SETTINGS_CONTROL_COLOR == SETTINGS_LANGUAGE + 1);
     assert(SETTINGS_DARK_THEME == SETTINGS_CONTROL_COLOR + 1);
     assert(SETTINGS_LYRIC_ALIGNMENT == SETTINGS_DARK_THEME + 1);
+    assert(SETTINGS_LYRIC_TRANSLATION == SETTINGS_LYRIC_ALIGNMENT + 1);
     assert(SETTINGS_IMMERSIVE_PLAYBACK ==
-           SETTINGS_LYRIC_ALIGNMENT + 1);
+           SETTINGS_LYRIC_TRANSLATION + 1);
     assert(SETTINGS_REDUCED_MOTION ==
            SETTINGS_IMMERSIVE_PLAYBACK + 1);
     assert(SETTINGS_CONTACT == SETTINGS_CACHE_CLEAR + 1);
@@ -208,6 +212,7 @@ int main(void) {
     assert(settings_item_is_adjustable(SETTINGS_CONTROL_COLOR));
     assert(settings_item_is_adjustable(SETTINGS_DARK_THEME));
     assert(settings_item_is_adjustable(SETTINGS_LYRIC_ALIGNMENT));
+    assert(settings_item_is_adjustable(SETTINGS_LYRIC_TRANSLATION));
     assert(settings_item_is_adjustable(SETTINGS_IMMERSIVE_PLAYBACK));
     assert(settings_item_is_adjustable(SETTINGS_REDUCED_MOTION));
     assert(!settings_item_is_adjustable(SETTINGS_CACHE_CLEAR));

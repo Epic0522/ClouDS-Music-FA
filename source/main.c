@@ -2236,6 +2236,7 @@ static int save_settings_for(const AppState *app, uint64_t cache_limit,
         .debug_logging = debug_logging,
         .control_color_mode = control_color_mode,
         .lyric_alignment = lyric_alignment,
+        .lyric_translation = app->lyric_translation,
         .immersive_playback_mode = app->immersive_playback_mode,
         .immersive_delay_seconds = app->immersive_delay_seconds,
         .reduced_motion = app->reduced_motion,
@@ -2337,6 +2338,31 @@ static void apply_lyric_alignment(AppState *app, LyricAlignment alignment) {
         app->status, sizeof(app->status), "%s",
         alignment == LYRIC_ALIGNMENT_LEFT ?
             "歌词已改为靠左" : "歌词已改为居中");
+}
+
+static void apply_lyric_translation(AppState *app, NetworkWorker *worker,
+                                    LyricTranslationMode mode) {
+    if (!app || mode >= LYRIC_TRANSLATION_COUNT ||
+        mode == app->lyric_translation)
+        return;
+    LyricTranslationMode previous = app->lyric_translation;
+    app->lyric_translation = mode;
+    char error[192];
+    if (save_settings_for(
+            app, app->cache_limit, app->language, app->debug_logging,
+            app->control_color_mode, app->lyric_alignment,
+            error, sizeof(error)) != 0) {
+        app->lyric_translation = previous;
+        show_error(app, error);
+        return;
+    }
+    if (mode == LYRIC_TRANSLATION_ON && app->current_queue >= 0 &&
+        app->current_queue < (int)app->queue_count) {
+        app->lyric_song_id = -1;
+        app->extras_retry_song_id = -1;
+        app->extras_retry_after_ms = 0U;
+        maybe_submit_song_extras(app, worker, app->current_queue);
+    }
 }
 
 static void apply_immersive_playback(
@@ -3628,6 +3654,7 @@ int main(void) {
     app.language = saved_settings.language;
     app.control_color_mode = saved_settings.control_color_mode;
     app.lyric_alignment = saved_settings.lyric_alignment;
+    app.lyric_translation = saved_settings.lyric_translation;
     app.immersive_playback_mode =
         saved_settings.immersive_playback_mode;
     app.immersive_delay_seconds =
@@ -3657,6 +3684,7 @@ int main(void) {
         app.language = saved_settings.language;
         app.control_color_mode = saved_settings.control_color_mode;
         app.lyric_alignment = saved_settings.lyric_alignment;
+        app.lyric_translation = saved_settings.lyric_translation;
         app.immersive_playback_mode =
             saved_settings.immersive_playback_mode;
         app.immersive_delay_seconds =
@@ -4377,6 +4405,11 @@ int main(void) {
                         &app, LYRIC_ALIGNMENT_CENTER);
                 } else if (app.tab == TAB_SETTINGS &&
                            app.settings_selected ==
+                               SETTINGS_LYRIC_TRANSLATION) {
+                    apply_lyric_translation(
+                        &app, worker, LYRIC_TRANSLATION_OFF);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
                                SETTINGS_IMMERSIVE_PLAYBACK) {
                     if (app.immersive_playback_mode ==
                         IMMERSIVE_PLAYBACK_MANUAL)
@@ -4432,6 +4465,11 @@ int main(void) {
                                SETTINGS_LYRIC_ALIGNMENT) {
                     apply_lyric_alignment(
                         &app, LYRIC_ALIGNMENT_LEFT);
+                } else if (app.tab == TAB_SETTINGS &&
+                           app.settings_selected ==
+                               SETTINGS_LYRIC_TRANSLATION) {
+                    apply_lyric_translation(
+                        &app, worker, LYRIC_TRANSLATION_ON);
                 } else if (app.tab == TAB_SETTINGS &&
                            app.settings_selected ==
                                SETTINGS_IMMERSIVE_PLAYBACK) {
@@ -4662,6 +4700,13 @@ int main(void) {
                             (LyricAlignment)(
                                 (app.lyric_alignment + 1) %
                                 LYRIC_ALIGNMENT_COUNT));
+                    else if (app.settings_selected ==
+                             SETTINGS_LYRIC_TRANSLATION)
+                        apply_lyric_translation(
+                            &app, worker,
+                            app.lyric_translation == LYRIC_TRANSLATION_ON ?
+                                LYRIC_TRANSLATION_OFF :
+                                LYRIC_TRANSLATION_ON);
                     else if (app.settings_selected ==
                              SETTINGS_IMMERSIVE_PLAYBACK) {
                         if (app.immersive_playback_mode ==

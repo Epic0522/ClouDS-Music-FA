@@ -1,0 +1,15 @@
+ARG DEVKITARM_IMAGE=devkitpro/devkitarm@sha256:116afba8df8453961de2936ffab20dd441edf4d682856c1ec8b0e53d7ed0bbf5
+FROM ${DEVKITARM_IMAGE}
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        build-essential \
+        libjpeg-dev \
+        libmbedtls-dev \
+        libpng-dev \
+        pkg-config \
+        python3-pil \
+        zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY mbedcrypto.pc /usr/local/lib/pkgconfig/mbedcrypto.pc

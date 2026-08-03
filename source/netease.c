@@ -1499,7 +1499,11 @@ int netease_lyrics(NeteaseClient *client, int64_t song_id,
         return -1;
     }
     int lrc_object = json_obj_get(&doc, 0, "lrc");
-    int lyric_token = lrc_object >= 0 ? json_obj_get(&doc, lrc_object, "lyric") : -1;
+    int lyric_token = lrc_object >= 0 ?
+        json_obj_get(&doc, lrc_object, "lyric") : -1;
+    int tlyric_object = json_obj_get(&doc, 0, "tlyric");
+    int translation_token = tlyric_object >= 0 ?
+        json_obj_get(&doc, tlyric_object, "lyric") : -1;
     char *lrc = (char *)malloc(body_size + 1);
     if (!lrc || lyric_token < 0 ||
         json_string(&doc, lyric_token, lrc, body_size + 1) < 0) {
@@ -1510,6 +1514,14 @@ int netease_lyrics(NeteaseClient *client, int64_t song_id,
         return -1;
     }
     *count = lyric_parse_lrc(lrc, lines, capacity);
+    if (*count > 0U && translation_token >= 0) {
+        char *translation = (char *)malloc(body_size + 1U);
+        if (translation &&
+            json_string(&doc, translation_token, translation,
+                        body_size + 1U) >= 0)
+            lyric_merge_translation_lrc(translation, lines, *count);
+        free(translation);
+    }
     free(lrc);
     free(tokens);
     free(body);

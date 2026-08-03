@@ -12,6 +12,7 @@ typedef struct {
     AppLanguage language;
     ControlColorMode control_color_mode;
     LyricAlignment lyric_alignment;
+    LyricTranslationMode lyric_translation;
     ImmersivePlaybackMode immersive_playback_mode;
     uint32_t immersive_delay_seconds;
     bool reduced_motion;

@@ -106,6 +106,23 @@ typedef struct {
     uint32_t immersive_delay_seconds;
 } SettingsFileV8Fixture;
 
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+    uint32_t lyric_alignment;
+    uint32_t play_mode;
+    uint32_t visualizer_mode;
+    uint32_t immersive_playback_mode;
+    uint32_t immersive_delay_seconds;
+    uint32_t reduced_motion;
+    uint32_t dark_theme;
+    uint32_t lyric_translation;
+} SettingsFileV11Fixture;
+
 static void write_bytes(const char *path, size_t count) {
     FILE *file = fopen(path, "wb");
     assert(file != NULL);
@@ -170,6 +187,7 @@ int main(void) {
     assert(settings.language == APP_LANGUAGE_CHINESE);
     assert(settings.control_color_mode == CONTROL_COLOR_YELLOW);
     assert(settings.lyric_alignment == LYRIC_ALIGNMENT_CENTER);
+    assert(settings.lyric_translation == LYRIC_TRANSLATION_OFF);
     assert(settings.immersive_playback_mode == IMMERSIVE_PLAYBACK_AUTO);
     assert(settings.immersive_delay_seconds == 10U);
     assert(!settings.reduced_motion);
@@ -183,6 +201,7 @@ int main(void) {
     settings.language = APP_LANGUAGE_ENGLISH;
     settings.control_color_mode = CONTROL_COLOR_BLACK;
     settings.lyric_alignment = LYRIC_ALIGNMENT_LEFT;
+    settings.lyric_translation = LYRIC_TRANSLATION_ON;
     settings.immersive_playback_mode = IMMERSIVE_PLAYBACK_MANUAL;
     settings.immersive_delay_seconds = 25U;
     settings.reduced_motion = true;
@@ -199,6 +218,7 @@ int main(void) {
     assert(settings.language == APP_LANGUAGE_ENGLISH);
     assert(settings.control_color_mode == CONTROL_COLOR_BLACK);
     assert(settings.lyric_alignment == LYRIC_ALIGNMENT_LEFT);
+    assert(settings.lyric_translation == LYRIC_TRANSLATION_ON);
     assert(settings.immersive_playback_mode ==
            IMMERSIVE_PLAYBACK_MANUAL);
     assert(settings.immersive_delay_seconds == 25U);
@@ -294,6 +314,23 @@ int main(void) {
            IMMERSIVE_PLAYBACK_MANUAL);
     assert(settings.immersive_delay_seconds == 30U);
     assert(!settings.reduced_motion);
+    assert(settings.lyric_translation == LYRIC_TRANSLATION_OFF);
+
+    SettingsFileV11Fixture invalid_translation = {
+        {'S', 'E', 'T', 'T'}, 11, NM3DS_CACHE_LIMIT_DEFAULT,
+        APP_LANGUAGE_CHINESE, 0, CONTROL_COLOR_YELLOW,
+        LYRIC_ALIGNMENT_CENTER, PLAY_MODE_SEQUENCE, VISUALIZER_SPECTRUM,
+        IMMERSIVE_PLAYBACK_AUTO, 10U, 0U, 0U, LYRIC_TRANSLATION_COUNT
+    };
+    legacy_settings_file = fopen(settings_path, "wb");
+    assert(legacy_settings_file != NULL);
+    assert(fwrite(&invalid_translation, 1, sizeof(invalid_translation),
+                  legacy_settings_file) == sizeof(invalid_translation));
+    assert(fclose(legacy_settings_file) == 0);
+    settings_defaults(&settings);
+    assert(settings_load(settings_path, &settings,
+                         error, sizeof(error)) == -1);
+    assert(settings.lyric_translation == LYRIC_TRANSLATION_OFF);
 
     SettingsFileV2Fixture invalid_settings = {
         {'S', 'E', 'T', 'T'}, 2, NM3DS_CACHE_LIMIT_DEFAULT, 99, 0
@@ -749,10 +786,14 @@ int main(void) {
     const char *lyric_cache_path = "/tmp/nm3ds-lyric-cache-test.lrc";
     remove(lyric_cache_path);
     LyricLine saved_lyrics[3] = {
-        {1234, "第一行歌词"},
-        {65432, "Second line"},
-        {70000, "A\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB글"}
+        {.time_ms = 1234, .text = "第一行歌词"},
+        {.time_ms = 65432, .text = "Second line"},
+        {.time_ms = 70000, .text = "A\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB글"}
     };
+    snprintf(saved_lyrics[0].translation,
+             sizeof(saved_lyrics[0].translation), "First translation");
+    snprintf(saved_lyrics[1].translation,
+             sizeof(saved_lyrics[1].translation), "Second translation");
     LyricLine loaded_lyrics[NM3DS_MAX_LYRICS];
     size_t loaded_lyric_count = 0;
     assert(lyric_cache_load(lyric_cache_path, loaded_lyrics,
@@ -769,9 +810,20 @@ int main(void) {
     assert(strcmp(loaded_lyrics[0].text, "第一行歌词") == 0);
     assert(loaded_lyrics[1].time_ms == 65432);
     assert(strcmp(loaded_lyrics[1].text, "Second line") == 0);
+    assert(strcmp(loaded_lyrics[0].translation, "First translation") == 0);
+    assert(strcmp(loaded_lyrics[1].translation, "Second translation") == 0);
     assert(loaded_lyrics[2].time_ms == 70000);
     assert(strcmp(loaded_lyrics[2].text, "A한글") == 0);
     write_bytes(lyric_cache_path, 5);
+    assert(lyric_cache_load(lyric_cache_path, loaded_lyrics,
+                            NM3DS_MAX_LYRICS, &loaded_lyric_count,
+                            error, sizeof(error)) == -1);
+    assert(loaded_lyric_count == 0);
+    FILE *legacy_lyric_cache = fopen(lyric_cache_path, "wb");
+    assert(legacy_lyric_cache != NULL);
+    assert(fputs("# ClouDS-Music lyric cache v2\n[0:01.000]old\n",
+                 legacy_lyric_cache) >= 0);
+    assert(fclose(legacy_lyric_cache) == 0);
     assert(lyric_cache_load(lyric_cache_path, loaded_lyrics,
                             NM3DS_MAX_LYRICS, &loaded_lyric_count,
                             error, sizeof(error)) == -1);

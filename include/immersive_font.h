@@ -12,6 +12,11 @@
 #define IMMERSIVE_FONT_CACHE_CAPACITY 384U
 #define IMMERSIVE_FONT_CACHE_HASH_SIZE 1024U
 
+typedef enum {
+    IMMERSIVE_FONT_FILTER_LINEAR = 0,
+    IMMERSIVE_FONT_FILTER_NEAREST
+} ImmersiveFontFilter;
+
 typedef struct {
     uint8_t *file_bytes;
     ImmersiveFontData data;
@@ -30,6 +35,7 @@ typedef struct {
     unsigned int cell_height;
     bool reset_pending;
     bool monochrome_cache;
+    ImmersiveFontFilter filter;
     bool ready;
 } ImmersiveFont;
 
@@ -39,6 +45,7 @@ int immersive_font_load(ImmersiveFont *font, const char *path);
 bool immersive_font_ready(const ImmersiveFont *font);
 void immersive_font_set_monochrome_cache(
     ImmersiveFont *font, bool enabled);
+void immersive_font_set_filter(ImmersiveFont *font, ImmersiveFontFilter filter);
 float immersive_font_glyph_height(const ImmersiveFont *font);
 void immersive_font_begin_frame(ImmersiveFont *font);
 bool immersive_font_glyph_advance(const ImmersiveFont *font,

@@ -93,6 +93,7 @@ static inline bool song_offline_full_allowed(const Song *song,
 typedef struct {
     uint32_t time_ms;
     char text[160];
+    char translation[160];
 } LyricLine;
 
 typedef struct {
@@ -178,6 +179,7 @@ typedef enum {
     SETTINGS_CONTROL_COLOR,
     SETTINGS_DARK_THEME,
     SETTINGS_LYRIC_ALIGNMENT,
+    SETTINGS_LYRIC_TRANSLATION,
     SETTINGS_IMMERSIVE_PLAYBACK,
     SETTINGS_REDUCED_MOTION,
     SETTINGS_CACHE_LIMIT,
@@ -202,6 +204,12 @@ typedef enum {
     LYRIC_ALIGNMENT_LEFT,
     LYRIC_ALIGNMENT_COUNT
 } LyricAlignment;
+
+typedef enum {
+    LYRIC_TRANSLATION_OFF = 0,
+    LYRIC_TRANSLATION_ON,
+    LYRIC_TRANSLATION_COUNT
+} LyricTranslationMode;
 
 typedef enum {
     CONTROL_COLOR_YELLOW = 0,
@@ -232,6 +240,7 @@ static inline bool settings_item_is_adjustable(int item) {
     return item == SETTINGS_LANGUAGE || item == SETTINGS_CONTROL_COLOR ||
            item == SETTINGS_DARK_THEME ||
            item == SETTINGS_LYRIC_ALIGNMENT ||
+           item == SETTINGS_LYRIC_TRANSLATION ||
            item == SETTINGS_IMMERSIVE_PLAYBACK ||
            item == SETTINGS_REDUCED_MOTION ||
            item == SETTINGS_CACHE_LIMIT ||
@@ -375,6 +384,7 @@ typedef struct {
     AppLanguage language;
     ControlColorMode control_color_mode;
     LyricAlignment lyric_alignment;
+    LyricTranslationMode lyric_translation;
     ImmersivePlaybackMode immersive_playback_mode;
     uint32_t immersive_delay_seconds;
     bool reduced_motion;
