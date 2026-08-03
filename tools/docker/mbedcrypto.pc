@@ -1,0 +1,8 @@
+prefix=/usr
+includedir=${prefix}/include
+
+Name: mbedcrypto
+Description: Mbed TLS cryptographic library
+Version: 2.28
+Libs: -lmbedcrypto
+Cflags: -I${includedir}

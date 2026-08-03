@@ -45,9 +45,9 @@ def main() -> int:
     encoded = (
         "\n".join(str(value) for value in sorted(project_values)) + "\n"
     ).encode("ascii")
-    assert len(project_values) == 525
+    assert len(project_values) == 526
     assert hashlib.sha256(encoded).hexdigest() == (
-        "953f9c528a67eeac2f34327100d68cfae4cff55ed1449b27bbaf0411885c26c9"
+        "f16b528337d3a9683216c1f73b741acc21b079549ccfe7b883aa57efba2b46a8"
     )
     print("ui font whitelist tests passed")
     return 0

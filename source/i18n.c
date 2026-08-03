@@ -41,6 +41,7 @@ static const Translation TRANSLATIONS[] = {
     TEXT("深色模式已开启", "Dark mode enabled"),
     TEXT("深色模式已关闭", "Dark mode disabled"),
     TEXT("歌词对齐", "Lyrics alignment"),
+    TEXT("翻译", "Translation"),
     TEXT("沉浸式播放", "Immersive playback"),
     TEXT("仅手动", "Manual only"),
     TEXT("减弱动态效果", "Reduce motion"),

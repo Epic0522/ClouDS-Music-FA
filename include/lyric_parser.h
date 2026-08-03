@@ -11,4 +11,5 @@
  * separates centiseconds.
  */
 size_t lyric_parse_lrc(char *lrc, LyricLine *lines, size_t capacity);
+void lyric_merge_translation_lrc(char *lrc, LyricLine *lines, size_t count);
 bool lyrics_are_placeholder(const LyricLine *lines, size_t count);

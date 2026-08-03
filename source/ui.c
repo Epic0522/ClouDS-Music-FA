@@ -9,6 +9,7 @@
 #include "immersive_font.h"
 #include "logo.h"
 #include "lyric_animation.h"
+#include "lyric_visual_style.h"
 #include "lyric_parser.h"
 #include "now_playing_policy.h"
 #include "qrcodegen.h"
@@ -150,6 +151,7 @@ static bool g_dark_theme = false;
 #define LYRIC_BOTTOM_Y \
     (LYRIC_TOP_Y + (LYRIC_VISIBLE_ROWS - 1) * LYRIC_ROW_HEIGHT)
 #define LYRIC_FADE_BOTTOM_Y 219.0f
+#define STAGE_LYRIC_TRANSLATION_MAX_WIDTH 320.0f
 #define LYRIC_TEXT_X 170.0f
 #define LYRIC_TEXT_WIDTH 208.0f
 #define LYRIC_TEXT_CLIP_HEIGHT 20.0f
@@ -265,8 +267,10 @@ struct Ui {
     size_t lyric_font_lyric_count;
     bool lyric_font_language_ready;
     bool lyric_font_japanese;
+    bool lyric_font_translation;
     UiLyricGlyphRun lyric_runs[LYRIC_RUN_CACHE_SLOTS];
     UiStageLyricLayout stage_lyric_layouts[NM3DS_MAX_LYRICS];
+    UiStageLyricLayout stage_translation_layouts[NM3DS_MAX_LYRICS];
     uint32_t lyric_cache_prepared_generation;
     uint64_t lyric_cache_signature;
     uint64_t control_marquee_signature;
@@ -1714,7 +1718,9 @@ static bool lyrics_use_japanese_glyphs(const AppState *app) {
                  text_contains_japanese_kana(song->artist)))
         return true;
     for (size_t index = 0U; index < app->lyric_count; index++)
-        if (text_contains_japanese_kana(app->lyrics[index].text))
+        if (text_contains_japanese_kana(app->lyrics[index].text) ||
+            (app->lyric_translation == LYRIC_TRANSLATION_ON &&
+             text_contains_japanese_kana(app->lyrics[index].translation)))
             return true;
     return false;
 }
@@ -1724,6 +1730,8 @@ static void reset_immersive_lyric_caches(Ui *ui) {
     memset(ui->lyric_runs, 0, sizeof(ui->lyric_runs));
     memset(ui->stage_lyric_layouts, 0,
            sizeof(ui->stage_lyric_layouts));
+    memset(ui->stage_translation_layouts, 0,
+           sizeof(ui->stage_translation_layouts));
     ui->lyric_cache_prepared_generation = 0U;
     ui->lyric_cache_signature = 0U;
 }
@@ -1740,12 +1748,16 @@ static void select_immersive_lyric_font(Ui *ui,
     }
     if (app->lyric_count == 0U) return;
     if (ui->lyric_font_language_ready &&
-        ui->lyric_font_lyric_count == app->lyric_count)
+        ui->lyric_font_lyric_count == app->lyric_count &&
+        ui->lyric_font_translation ==
+            (app->lyric_translation == LYRIC_TRANSLATION_ON))
         return;
 
     bool japanese = lyrics_use_japanese_glyphs(app);
     ui->lyric_font_lyric_count = app->lyric_count;
     ui->lyric_font_language_ready = true;
+    ui->lyric_font_translation =
+        app->lyric_translation == LYRIC_TRANSLATION_ON;
     if (japanese == ui->lyric_font_japanese) return;
 
     const char *path = japanese ?
@@ -1858,6 +1870,18 @@ static u32 color_with_alpha(u32 color, float alpha) {
     u32 original = color >> 24;
     u32 scaled = (u32)((float)original * alpha + 0.5f);
     return (color & 0x00FFFFFFU) | (scaled << 24);
+}
+
+static u32 lyric_translation_color(bool active, float alpha) {
+    LyricTranslationStyle style = lyric_translation_style(g_dark_theme, active);
+    return color_with_alpha(
+        C2D_Color32(style.red, style.green, style.blue, 255U),
+        alpha * style.opacity);
+}
+
+static u32 lyric_translation_cache_color(bool active) {
+    LyricTranslationStyle style = lyric_translation_style(g_dark_theme, active);
+    return C2D_Color32(style.red, style.green, style.blue, 255U);
 }
 
 static u32 blend_ui_color(u32 from, u32 to, float blend) {
@@ -2010,6 +2034,19 @@ static float lyric_visibility(float y) {
     if (y > LYRIC_BOTTOM_Y)
         return (LYRIC_FADE_BOTTOM_Y - y) /
                (LYRIC_FADE_BOTTOM_Y - LYRIC_BOTTOM_Y);
+    return 1.0f;
+}
+
+static float reduced_lyric_visibility(float y, float row_height,
+                                      int visible_rows) {
+    float fade_top = fmaxf(0.0f, LYRIC_TOP_Y - row_height * 1.65f);
+    float bottom = LYRIC_TOP_Y +
+        (float)(visible_rows - 1) * row_height;
+    float fade_bottom = bottom + row_height;
+    if (y < LYRIC_TOP_Y)
+        return (y - fade_top) / (LYRIC_TOP_Y - fade_top);
+    if (y > bottom)
+        return (fade_bottom - y) / (fade_bottom - bottom);
     return 1.0f;
 }
 
@@ -2241,10 +2278,12 @@ static size_t stage_lyric_include_trailing_marks(
 }
 
 static UiStageLyricLayout *stage_lyric_layout(
-    Ui *ui, size_t lyric_index, const char *text, float max_width) {
+    Ui *ui, size_t lyric_index, const char *text, float max_width,
+    bool translation) {
     if (!ui || !text || lyric_index >= NM3DS_MAX_LYRICS)
         return NULL;
-    UiStageLyricLayout *layout =
+    UiStageLyricLayout *layout = translation ?
+        &ui->stage_translation_layouts[lyric_index] :
         &ui->stage_lyric_layouts[lyric_index];
     uint64_t signature = immersive_text_signature(text);
     uint16_t layout_width =
@@ -2260,7 +2299,8 @@ static UiStageLyricLayout *stage_lyric_layout(
     size_t length = strlen(text);
     if (length > 159U) length = 159U;
     const float active_scale = 1.16f;
-    float line_limit = max_width / active_scale;
+    float line_limit = max_width / (translation ?
+        active_scale * LYRIC_TRANSLATION_SCALE : active_scale);
     float full_width = immersive_text_width(ui, text);
     float balanced_limit =
         full_width / (float)STAGE_LYRIC_MAX_LINES;
@@ -2391,29 +2431,69 @@ static float stage_lyric_scale(
     return scale;
 }
 
+static bool lyric_translation_visible(const AppState *app, int lyric_index) {
+    return app && app->lyric_translation == LYRIC_TRANSLATION_ON &&
+           lyric_index >= 0 && lyric_index < (int)app->lyric_count &&
+           app->lyrics[lyric_index].translation[0] != '\0';
+}
+
+static float stage_lyric_text_height(
+    Ui *ui, int lyric_index, const char *text, float max_width,
+    float scale, bool translation) {
+    UiStageLyricLayout *layout = stage_lyric_layout(
+        ui, (size_t)lyric_index, text, max_width, translation);
+    if (!layout) return 0.0f;
+    float glyph_height = immersive_font_glyph_height(&ui->immersive_font);
+    return glyph_height * scale * layout->line_count +
+        STAGE_LYRIC_LINE_GAP * scale *
+            (layout->line_count > 0U ? layout->line_count - 1U : 0U);
+}
+
+static float stage_lyric_translation_height(
+    Ui *ui, const AppState *app, int lyric_index, float focus_reference) {
+    if (!lyric_translation_visible(app, lyric_index)) return 0.0f;
+    float max_width = STAGE_LYRIC_TRANSLATION_MAX_WIDTH;
+    UiStageLyricLayout *layout = stage_lyric_layout(
+        ui, (size_t)lyric_index, app->lyrics[lyric_index].translation,
+        max_width, true);
+    if (!layout) return 0.0f;
+    float focus = lyric_animation_line_focus(lyric_index, focus_reference);
+    float scale = stage_lyric_scale(layout, max_width, focus) *
+        LYRIC_TRANSLATION_SCALE;
+    return stage_lyric_text_height(
+        ui, lyric_index, app->lyrics[lyric_index].translation,
+        max_width, scale, true);
+}
+
+static float stage_lyric_original_height(
+    Ui *ui, const AppState *app, int lyric_index, float focus_reference) {
+    if (!ui || !app || lyric_index < 0 ||
+        lyric_index >= (int)app->lyric_count)
+        return 0.0f;
+    float max_width = app->lyric_alignment == LYRIC_ALIGNMENT_LEFT ?
+        352.0f : 370.0f;
+    UiStageLyricLayout *layout = stage_lyric_layout(
+        ui, (size_t)lyric_index, app->lyrics[lyric_index].text,
+        max_width, false);
+    if (!layout) return 0.0f;
+    float focus = lyric_animation_line_focus(lyric_index, focus_reference);
+    return stage_lyric_text_height(
+        ui, lyric_index, app->lyrics[lyric_index].text, max_width,
+        stage_lyric_scale(layout, max_width, focus), false);
+}
+
 static float stage_lyric_block_height(
     Ui *ui, const AppState *app, int lyric_index,
     float focus_reference) {
     if (!ui || !app || lyric_index < 0 ||
         lyric_index >= (int)app->lyric_count)
         return 0.0f;
-    float max_width =
-        app->lyric_alignment == LYRIC_ALIGNMENT_LEFT ?
-        352.0f : 370.0f;
-    UiStageLyricLayout *layout = stage_lyric_layout(
-        ui, (size_t)lyric_index,
-        app->lyrics[lyric_index].text, max_width);
-    if (!layout) return 0.0f;
-    float focus = lyric_animation_line_focus(
-        lyric_index, focus_reference);
-    float scale = stage_lyric_scale(
-        layout, max_width, focus);
-    float glyph_height =
-        immersive_font_glyph_height(&ui->immersive_font);
-    return glyph_height * scale * layout->line_count +
-        STAGE_LYRIC_LINE_GAP *
-            (layout->line_count > 0U ?
-             layout->line_count - 1U : 0U);
+    float height = stage_lyric_original_height(
+        ui, app, lyric_index, focus_reference);
+    float translation_height = stage_lyric_translation_height(
+        ui, app, lyric_index, focus_reference);
+    return height + (translation_height > 0.0f ?
+                     translation_height + 4.0f : 0.0f);
 }
 
 static float stage_lyric_center_for_focus(
@@ -2580,7 +2660,7 @@ static void draw_immersive_centered_scaled_text(
 static void draw_immersive_stage_text(
     Ui *ui, const char *text, float anchor_x, float center_y,
     float parallax, float scale_x, float scale_y, bool left_aligned,
-    bool pixel_snap, u32 color, unsigned int blur_level) {
+    bool pixel_snap, bool sharp, u32 color, unsigned int blur_level) {
     if (!ui || !text || !text[0] ||
         scale_x <= 0.0f || scale_y <= 0.0f) return;
     float width = immersive_text_width(ui, text);
@@ -2593,6 +2673,10 @@ static void draw_immersive_stage_text(
         pixel_snap ? lyric_animation_pixel_snap(x) : x;
     float draw_y =
         pixel_snap ? lyric_animation_pixel_snap(y) : y;
+    immersive_font_set_filter(
+        &ui->immersive_font,
+        sharp ? IMMERSIVE_FONT_FILTER_NEAREST :
+                IMMERSIVE_FONT_FILTER_LINEAR);
     immersive_text_draw_scaled_blurred(
         ui, text, draw_x, draw_y,
         scale_x, scale_y, color, blur_level);
@@ -2603,12 +2687,14 @@ static void draw_stage_lyric(
     float center_y, float parallax,
     float base_scale, float focus, float alignment,
     float highlight, float softness,
-    bool left_aligned, u32 color, u32 glow) {
+    bool left_aligned, bool translation, bool sharp, u32 color, u32 glow) {
     if (!ui || !text || !text[0]) return;
-    const float max_width = left_aligned ? 352.0f : 370.0f;
+    const float max_width = translation ?
+        STAGE_LYRIC_TRANSLATION_MAX_WIDTH :
+        (left_aligned ? 352.0f : 370.0f);
     float anchor_x = left_aligned ? 24.0f : 200.0f;
     UiStageLyricLayout *layout = stage_lyric_layout(
-        ui, (size_t)lyric_index, text, max_width);
+        ui, (size_t)lyric_index, text, max_width, translation);
     if (!layout) return;
     float natural_width = layout->maximum_width;
     float width_fit = natural_width > 0.0f ?
@@ -2727,11 +2813,12 @@ static void draw_stage_lyric(
             draw_immersive_stage_text(
                 ui, segment, anchor_x, line_center + 1.5f,
                 parallax, fitted_scale_x, fitted_scale_y,
-                draw_left_aligned, true, glow, 0U);
+                draw_left_aligned, true, false, glow, 0U);
         draw_immersive_stage_text(
             ui, segment, anchor_x, line_center,
             parallax, fitted_scale_x, fitted_scale_y,
             draw_left_aligned, blur_level == 0U,
+            sharp && blur_level == 0U,
             color, blur_level);
     }
 }
@@ -3340,6 +3427,8 @@ static int settings_item_y(int item) {
         case SETTINGS_DARK_THEME: return UI_SETTINGS_DARK_THEME_Y;
         case SETTINGS_LYRIC_ALIGNMENT:
             return UI_SETTINGS_LYRIC_ALIGNMENT_Y;
+        case SETTINGS_LYRIC_TRANSLATION:
+            return UI_SETTINGS_LYRIC_TRANSLATION_Y;
         case SETTINGS_IMMERSIVE_PLAYBACK:
             return UI_SETTINGS_IMMERSIVE_Y;
         case SETTINGS_REDUCED_MOTION:
@@ -3364,6 +3453,8 @@ static int settings_item_height(int item) {
             return UI_SETTINGS_DARK_THEME_HEIGHT;
         case SETTINGS_LYRIC_ALIGNMENT:
             return UI_SETTINGS_LYRIC_ALIGNMENT_HEIGHT;
+        case SETTINGS_LYRIC_TRANSLATION:
+            return UI_SETTINGS_LYRIC_TRANSLATION_HEIGHT;
         case SETTINGS_IMMERSIVE_PLAYBACK:
             return UI_SETTINGS_IMMERSIVE_HEIGHT;
         case SETTINGS_REDUCED_MOTION:
@@ -3578,6 +3669,38 @@ static void draw_settings(Ui *ui, const AppState *app) {
             label_centered(
                 ui, i18n_text(alignment_labels[i]), x,
                 lyric_alignment_y + 1, 76, 22, UI_TEXT_LABEL,
+                active ? COL_TEXT : COL_MUTED);
+        }
+    }
+
+    int lyric_translation_y =
+        UI_SETTINGS_LYRIC_TRANSLATION_Y - scroll_offset;
+    if (ui_settings_row_is_visible(
+            UI_SETTINGS_LYRIC_TRANSLATION_Y,
+            UI_SETTINGS_LYRIC_TRANSLATION_HEIGHT, scroll_offset)) {
+        bool focused = settings_item_focused(
+            app, SETTINGS_LYRIC_TRANSLATION);
+        panel(
+            10, lyric_translation_y, 380,
+            UI_SETTINGS_LYRIC_TRANSLATION_HEIGHT,
+            focused ? COL_PANEL_2 : COL_PANEL,
+            focused ? g_control_accent : COL_GRID);
+        label_text(
+            ui, i18n_text("翻译"), 22, lyric_translation_y + 3,
+            UI_TEXT_LABEL, focused ? COL_TEXT : g_control_accent);
+        static const char *translation_labels[LYRIC_TRANSLATION_COUNT] = {
+            "关", "开"
+        };
+        for (int i = 0; i < LYRIC_TRANSLATION_COUNT; i++) {
+            float x = 216.0f + i * 82.0f;
+            bool active = app->lyric_translation ==
+                (LyricTranslationMode)i;
+            draw_aero_button(
+                x, lyric_translation_y + 1, 76, 22,
+                active, g_control_selected_accent);
+            label_centered(
+                ui, i18n_text(translation_labels[i]), x,
+                lyric_translation_y + 1, 76, 22, UI_TEXT_LABEL,
                 active ? COL_TEXT : COL_MUTED);
         }
     }
@@ -4188,6 +4311,16 @@ static void prepare_music_stage_lyric_cache(
                 glyph_colors[glyph_count] = lyric_glow;
                 glyph_blurs[glyph_count++] = 0U;
             }
+            if (lyric_translation_visible(app, index) &&
+                glyph_count <
+                    sizeof(glyph_texts) / sizeof(glyph_texts[0])) {
+                glyph_texts[glyph_count] = app->lyrics[index].translation;
+                bool translation_active = highlight > 0.45f;
+                glyph_colors[glyph_count] = lyric_translation_cache_color(
+                    translation_active);
+                glyph_blurs[glyph_count++] = translation_active ? 0U :
+                                                       blur_level;
+            }
         }
     }
     /*
@@ -4230,16 +4363,22 @@ static void draw_reduced_motion_lyrics(
      * per-glyph scale animation, blur atlas, glow pass, or spring chain.
      * Keeping the whole lyric context is more useful than dropping rows, and
      * its workload stays close to the original application's 30 fps path.
-     */
+    */
     float scroll = lyric_frame->scroll;
+    float row_height = app->lyric_translation == LYRIC_TRANSLATION_ON ?
+        42.0f : LYRIC_ROW_HEIGHT;
+    int visible_rows = app->lyric_translation == LYRIC_TRANSLATION_ON ?
+        5 : LYRIC_VISIBLE_ROWS;
     int first = (int)floorf(scroll) - 1;
-    int last = (int)floorf(scroll) + LYRIC_VISIBLE_ROWS + 1;
+    int last = (int)floorf(scroll) + visible_rows + 1;
     for (int index = first; index <= last; index++) {
         if (index < 0 || index >= (int)app->lyric_count)
             continue;
         float y =
-            LYRIC_TOP_Y + ((float)index - scroll) * LYRIC_ROW_HEIGHT;
-        float visibility = lyric_visibility(y);
+            LYRIC_TOP_Y + ((float)index - scroll) * row_height;
+        float visibility = app->lyric_translation == LYRIC_TRANSLATION_ON ?
+            reduced_lyric_visibility(y, row_height, visible_rows) :
+            lyric_visibility(y);
         if (visibility <= 0.0f) continue;
         if (visibility > 1.0f) visibility = 1.0f;
         y = floorf(y + 0.5f);
@@ -4257,6 +4396,15 @@ static void draw_reduced_motion_lyrics(
                 ui, app->lyrics[index].text,
                 24.0f, y, UI_TEXT_LARGE, 352.0f,
                 text_color, 60U);
+        }
+        if (lyric_translation_visible(app, index)) {
+            u32 translation_color = lyric_translation_color(
+                active, visibility * (active ? 1.0f : 0.8f));
+            smooth_text_fit(
+                ui, app->lyrics[index].translation,
+                24.0f, y + 19.0f, UI_TEXT_LABEL,
+                STAGE_LYRIC_TRANSLATION_MAX_WIDTH,
+                translation_color, 80U);
         }
     }
 }
@@ -4387,31 +4535,73 @@ static void draw_music_stage(Ui *ui, const AppState *app,
                 COL_LYRIC_ACTIVE, crisp_alpha * edge / 255.0f) :
             color_with_alpha(
                 COL_LYRIC_INACTIVE, crisp_alpha * edge / 255.0f);
+        bool translation_active = highlight > 0.45f;
+        u32 translation_color = lyric_translation_color(
+            translation_active, crisp_alpha * edge / 255.0f);
+        float original_height = stage_lyric_original_height(
+            ui, app, index, lyric_frame->focus);
+        float translation_height = stage_lyric_translation_height(
+            ui, app, index, lyric_frame->focus);
+        float original_y = y -
+            (translation_height > 0.0f ?
+             (translation_height + 4.0f) * 0.5f : 0.0f);
         if (immersive_font_ready(&ui->immersive_font)) {
             draw_stage_lyric(
-                ui, index, app->lyrics[index].text, y, parallax,
+                ui, index, app->lyrics[index].text, original_y, parallax,
                 scale, focus, alignment, highlight, softness,
                 app->lyric_alignment == LYRIC_ALIGNMENT_LEFT,
+                false, translation_active,
                 lyric_color,
                 color_with_alpha(
                     lyric_glow,
                     app->reduced_motion ? 0.0f :
                     88.0f * edge * lyric_reveal / 255.0f));
+            if (translation_height > 0.0f) {
+                float translation_y = original_y + original_height * 0.5f +
+                    4.0f + translation_height * 0.5f;
+                draw_stage_lyric(
+                    ui, index, app->lyrics[index].translation,
+                    translation_y, parallax * 0.6f,
+                    scale * LYRIC_TRANSLATION_SCALE,
+                    focus, alignment, 0.0f,
+                    translation_active ? 0.0f : softness,
+                    app->lyric_alignment == LYRIC_ALIGNMENT_LEFT, true,
+                    translation_active, translation_color, 0U);
+            }
         } else {
             if (app->lyric_alignment == LYRIC_ALIGNMENT_LEFT)
                 menu_text_fit(
                     ui, app->lyrics[index].text,
-                    24 + parallax, y - 12,
+                    24 + parallax, original_y - 12,
                     highlight > 0.45f ? UI_TEXT_TITLE : UI_TEXT_LARGE,
                     352, lyric_color, 36);
             else
                 menu_text_centered(
                     ui, app->lyrics[index].text,
-                    20 + parallax, y - 12, 360, 28,
+                    20 + parallax, original_y - 12, 360, 28,
                     highlight > 0.45f ? UI_TEXT_TITLE : UI_TEXT_LARGE,
                     lyric_color, 36);
+            if (translation_height > 0.0f) {
+                float translation_y = original_y + original_height * 0.5f +
+                    4.0f;
+                if (app->lyric_alignment == LYRIC_ALIGNMENT_LEFT)
+                    menu_text_fit(
+                        ui, app->lyrics[index].translation,
+                        24 + parallax * 0.6f, translation_y,
+                        UI_TEXT_LABEL, STAGE_LYRIC_TRANSLATION_MAX_WIDTH,
+                        translation_color, 60);
+                else
+                    menu_text_centered(
+                        ui, app->lyrics[index].translation,
+                        40 + parallax * 0.6f, translation_y,
+                        STAGE_LYRIC_TRANSLATION_MAX_WIDTH, 20,
+                        UI_TEXT_LABEL,
+                        translation_color, 60);
+            }
         }
     }
+    immersive_font_set_filter(
+        &ui->immersive_font, IMMERSIVE_FONT_FILTER_LINEAR);
 }
 
 static void draw_top(Ui *ui, C3D_RenderTarget *target,
@@ -5354,8 +5544,8 @@ draw_page_controls(Ui *ui, const AppState *app, const Player *player) {
                               "切换" :
                           app->settings_selected == SETTINGS_CONTROL_COLOR ?
                               "切换" :
-                          app->settings_selected ==
-                                  SETTINGS_LYRIC_ALIGNMENT ?
+                          app->settings_selected == SETTINGS_LYRIC_ALIGNMENT ||
+                          app->settings_selected == SETTINGS_LYRIC_TRANSLATION ?
                               "切换" :
                           app->settings_selected ==
                                   SETTINGS_IMMERSIVE_PLAYBACK ?
@@ -6566,7 +6756,7 @@ static void draw_bottom_discover(Ui *ui, const AppState *app) {
 
 static void draw_bottom_settings_clean(Ui *ui, const AppState *app) {
     static const char *names[SETTINGS_ITEM_COUNT] = {
-        "语言", "控件变色", "深色模式", "歌词对齐", "沉浸式播放",
+        "语言", "控件变色", "深色模式", "歌词对齐", "翻译", "沉浸式播放",
         "减弱动态效果", "缓存上限", "调试日志", "清空缓存",
         "联系作者", "项目仓库", "使用须知", "版本"
     };
@@ -6650,6 +6840,10 @@ static void draw_bottom_settings_clean(Ui *ui, const AppState *app) {
                 value, sizeof(value), "%s",
                 i18n_text(app->lyric_alignment == LYRIC_ALIGNMENT_LEFT ?
                           "靠左" : "居中"));
+        else if (index == SETTINGS_LYRIC_TRANSLATION)
+            i18n_snprintf(value, sizeof(value), "%s",
+                          i18n_text(app->lyric_translation ==
+                                    LYRIC_TRANSLATION_ON ? "开" : "关"));
         else if (index == SETTINGS_IMMERSIVE_PLAYBACK) {
             if (app->immersive_playback_mode ==
                 IMMERSIVE_PLAYBACK_MANUAL)

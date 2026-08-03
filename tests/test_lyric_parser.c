@@ -30,6 +30,29 @@ int main(void) {
     assert(lyric_parse_lrc(capacity_lrc, lines, 2) == 2);
     assert(strcmp(lines[1].text, "two") == 0);
 
+    char original_lrc[] =
+        "[00:01.00]first\n[00:02.50]second\n";
+    char translation_lrc[] =
+        "[00:01.00]translated first\n[00:02.50]  translated second\n"
+        "[00:03.00]unmatched\n[broken]ignored\n[00:04.00]\n";
+    memset(lines, 0, sizeof(lines));
+    count = lyric_parse_lrc(original_lrc, lines, 8);
+    assert(count == 2);
+    lyric_merge_translation_lrc(translation_lrc, lines, count);
+    assert(strcmp(lines[0].translation, "translated first") == 0);
+    assert(strcmp(lines[1].translation, "translated second") == 0);
+
+    char long_translation[512] = "[00:01.00]";
+    for (int i = 0; i < 80; i++)
+        strcat(long_translation, "\xE4\xB8\xAD");
+    lyric_merge_translation_lrc(long_translation, lines, count);
+    assert(strlen(lines[0].translation) < sizeof(lines[0].translation));
+    assert(strlen(lines[0].translation) % 3U == 0U);
+
+    char empty_translation[] = "[00:01.00]   \n";
+    lyric_merge_translation_lrc(empty_translation, lines, count);
+    assert(strlen(lines[0].translation) % 3U == 0U);
+
     puts("lyric parser tests: ok");
     return 0;
 }

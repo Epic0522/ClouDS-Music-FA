@@ -115,6 +115,23 @@ typedef struct {
     uint32_t dark_theme;
 } SettingsFileV10;
 
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint64_t cache_limit;
+    uint32_t language;
+    uint32_t debug_logging;
+    uint32_t control_color_mode;
+    uint32_t lyric_alignment;
+    uint32_t play_mode;
+    uint32_t visualizer_mode;
+    uint32_t immersive_playback_mode;
+    uint32_t immersive_delay_seconds;
+    uint32_t reduced_motion;
+    uint32_t dark_theme;
+    uint32_t lyric_translation;
+} SettingsFileV11;
+
 static void set_error(char *error, size_t size, const char *format, ...) {
     if (!error || size == 0) return;
     va_list args;
@@ -129,6 +146,7 @@ void settings_defaults(AppSettings *settings) {
     settings->language = APP_LANGUAGE_CHINESE;
     settings->control_color_mode = CONTROL_COLOR_YELLOW;
     settings->lyric_alignment = LYRIC_ALIGNMENT_CENTER;
+    settings->lyric_translation = LYRIC_TRANSLATION_OFF;
     settings->immersive_playback_mode = IMMERSIVE_PLAYBACK_AUTO;
     settings->immersive_delay_seconds = 10U;
     settings->reduced_motion = false;
@@ -144,7 +162,7 @@ int settings_load(const char *path, AppSettings *settings,
     FILE *file = fopen(path, "rb");
     if (!file) return 1;
 
-    SettingsFileV10 saved;
+    SettingsFileV11 saved;
     memset(&saved, 0, sizeof(saved));
     size_t bytes = fread(&saved, 1, sizeof(saved), file);
     bool eof = fgetc(file) == EOF && !ferror(file);
@@ -223,11 +241,27 @@ int settings_load(const char *path, AppSettings *settings,
                          IMMERSIVE_PLAYBACK_MANUAL &&
                      saved.immersive_delay_seconds >= 5U &&
                      saved.immersive_delay_seconds <= 60U &&
-                     saved.reduced_motion <= 1U &&
-                     saved.dark_theme <= 1U;
+                      saved.reduced_motion <= 1U &&
+                      saved.dark_theme <= 1U;
+    bool v11_valid = common_valid && saved.version == 11 &&
+                      bytes == sizeof(SettingsFileV11) &&
+                      i18n_language_valid((int)saved.language) &&
+                      saved.debug_logging <= 1U &&
+                      saved.control_color_mode < CONTROL_COLOR_COUNT &&
+                      saved.lyric_alignment < LYRIC_ALIGNMENT_COUNT &&
+                      saved.play_mode < PLAY_MODE_COUNT &&
+                      saved.visualizer_mode < VISUALIZER_COUNT &&
+                      saved.immersive_playback_mode <=
+                          IMMERSIVE_PLAYBACK_MANUAL &&
+                      saved.immersive_delay_seconds >= 5U &&
+                      saved.immersive_delay_seconds <= 60U &&
+                      saved.reduced_motion <= 1U &&
+                      saved.dark_theme <= 1U &&
+                      saved.lyric_translation < LYRIC_TRANSLATION_COUNT;
     bool valid =
         v1_valid || v2_valid || v3_valid || v4_valid || v5_valid ||
-        v6_valid || v7_valid || v8_valid || v9_valid || v10_valid;
+        v6_valid || v7_valid || v8_valid || v9_valid || v10_valid ||
+        v11_valid;
     if (!valid) {
         set_error(error, error_size, "保存的设置无效");
         return -1;
@@ -235,35 +269,42 @@ int settings_load(const char *path, AppSettings *settings,
     settings->cache_limit = saved.cache_limit;
     settings->language =
         v2_valid || v3_valid || v4_valid || v5_valid || v6_valid ||
-        v7_valid || v8_valid || v9_valid || v10_valid ?
+        v7_valid || v8_valid || v9_valid || v10_valid || v11_valid ?
                          (AppLanguage)saved.language : APP_LANGUAGE_CHINESE;
     settings->debug_logging =
         (v3_valid || v4_valid || v5_valid || v6_valid || v7_valid ||
-         v8_valid || v9_valid || v10_valid) &&
+         v8_valid || v9_valid || v10_valid || v11_valid) &&
         saved.debug_logging != 0;
     settings->control_color_mode =
         v5_valid || v6_valid || v7_valid || v8_valid || v9_valid ||
-        v10_valid ?
+        v10_valid || v11_valid ?
         (ControlColorMode)saved.control_color_mode :
         v4_valid && saved.control_color_mode != 0U ?
             CONTROL_COLOR_ADAPTIVE : CONTROL_COLOR_YELLOW;
     settings->lyric_alignment =
-        v6_valid || v7_valid || v8_valid || v9_valid || v10_valid ?
+        v6_valid || v7_valid || v8_valid || v9_valid || v10_valid ||
+        v11_valid ?
         (LyricAlignment)saved.lyric_alignment : LYRIC_ALIGNMENT_CENTER;
-    settings->play_mode = v7_valid || v8_valid || v9_valid || v10_valid ?
+    settings->play_mode = v7_valid || v8_valid || v9_valid || v10_valid ||
+        v11_valid ?
         (PlayMode)saved.play_mode : PLAY_MODE_SEQUENCE;
     settings->visualizer_mode =
-        v7_valid || v8_valid || v9_valid || v10_valid ?
+        v7_valid || v8_valid || v9_valid || v10_valid || v11_valid ?
         (VisualizerMode)saved.visualizer_mode : VISUALIZER_SPECTRUM;
-    settings->immersive_playback_mode = v8_valid || v9_valid || v10_valid ?
+    settings->immersive_playback_mode = v8_valid || v9_valid || v10_valid ||
+        v11_valid ?
         (ImmersivePlaybackMode)saved.immersive_playback_mode :
         IMMERSIVE_PLAYBACK_AUTO;
-    settings->immersive_delay_seconds = v8_valid || v9_valid || v10_valid ?
+    settings->immersive_delay_seconds = v8_valid || v9_valid || v10_valid ||
+        v11_valid ?
         saved.immersive_delay_seconds : 10U;
     settings->reduced_motion =
-        (v9_valid || v10_valid) && saved.reduced_motion != 0U;
+        (v9_valid || v10_valid || v11_valid) && saved.reduced_motion != 0U;
     settings->dark_theme =
-        v10_valid && saved.dark_theme != 0U;
+        (v10_valid || v11_valid) && saved.dark_theme != 0U;
+    settings->lyric_translation = v11_valid ?
+        (LyricTranslationMode)saved.lyric_translation :
+        LYRIC_TRANSLATION_OFF;
     return 0;
 }
 
@@ -274,6 +315,7 @@ int settings_save(const char *path, const AppSettings *settings,
         !i18n_language_valid(settings->language) ||
         settings->control_color_mode >= CONTROL_COLOR_COUNT ||
         settings->lyric_alignment >= LYRIC_ALIGNMENT_COUNT ||
+        settings->lyric_translation >= LYRIC_TRANSLATION_COUNT ||
         settings->immersive_playback_mode > IMMERSIVE_PLAYBACK_MANUAL ||
         settings->immersive_delay_seconds < 5U ||
         settings->immersive_delay_seconds > 60U ||
@@ -291,10 +333,10 @@ int settings_save(const char *path, const AppSettings *settings,
         set_error(error, error_size, "无法保存设置");
         return -1;
     }
-    SettingsFileV10 saved;
+    SettingsFileV11 saved;
     memset(&saved, 0, sizeof(saved));
     memcpy(saved.magic, "SETT", 4);
-    saved.version = 10;
+    saved.version = 11;
     saved.cache_limit = settings->cache_limit;
     saved.language = (uint32_t)settings->language;
     saved.debug_logging = settings->debug_logging ? 1U : 0U;
@@ -307,6 +349,7 @@ int settings_save(const char *path, const AppSettings *settings,
     saved.immersive_delay_seconds = settings->immersive_delay_seconds;
     saved.reduced_motion = settings->reduced_motion ? 1U : 0U;
     saved.dark_theme = settings->dark_theme ? 1U : 0U;
+    saved.lyric_translation = (uint32_t)settings->lyric_translation;
     bool wrote = fwrite(&saved, 1, sizeof(saved), file) == sizeof(saved);
     int close_result = fclose(file);
     if (!wrote || close_result != 0) {

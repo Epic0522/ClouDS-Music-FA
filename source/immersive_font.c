@@ -395,6 +395,7 @@ int immersive_font_load(ImmersiveFont *font, const char *path) {
     clear_texture(font);
     C3D_TexFlush(&font->texture);
     C3D_TexSetFilter(&font->texture, GPU_LINEAR, GPU_LINEAR);
+    font->filter = IMMERSIVE_FONT_FILTER_LINEAR;
     C3D_TexSetWrap(&font->texture, GPU_CLAMP_TO_BORDER,
                    GPU_CLAMP_TO_BORDER);
     return 0;
@@ -419,6 +420,19 @@ void immersive_font_set_monochrome_cache(
         clear_texture(font);
         C3D_TexFlush(&font->texture);
     }
+}
+
+void immersive_font_set_filter(ImmersiveFont *font, ImmersiveFontFilter filter) {
+    if (!font || !font->ready || filter > IMMERSIVE_FONT_FILTER_NEAREST ||
+        font->filter == filter)
+        return;
+    /* Submit earlier glyphs before changing the shared texture sampler. */
+    C2D_Flush();
+    C3D_TexSetFilter(
+        &font->texture,
+        filter == IMMERSIVE_FONT_FILTER_NEAREST ? GPU_NEAREST : GPU_LINEAR,
+        filter == IMMERSIVE_FONT_FILTER_NEAREST ? GPU_NEAREST : GPU_LINEAR);
+    font->filter = filter;
 }
 
 float immersive_font_glyph_height(const ImmersiveFont *font) {

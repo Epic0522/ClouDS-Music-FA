@@ -214,6 +214,10 @@ host-test:
 		-o tests/test_lyric_animation
 	@tests/test_lyric_animation
 	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
+		source/lyric_visual_style.c tests/test_lyric_visual_style.c \
+		-o tests/test_lyric_visual_style
+	@tests/test_lyric_visual_style
+	@cc -std=c11 -Wall -Wextra -Werror -Iinclude \
 		source/lyric_parser.c source/unicode_text.c \
 		tests/test_lyric_parser.c -o tests/test_lyric_parser
 	@tests/test_lyric_parser
@@ -367,6 +371,7 @@ clean:
 		$(CIA_OUTPUT) $(CIA_BANNER) \
 		tests/test_json tests/test_ime tests/test_storage tests/test_qrcode
 	@rm -f tests/test_auth tests/test_navigation tests/test_lyric_animation \
+		tests/test_lyric_visual_style \
 		tests/test_ime_candidate_layout \
 		tests/test_immersive_font_data \
 		tests/test_unicode_text \
