@@ -673,9 +673,10 @@ bool cover_restore_flow(CoverArt *cover, const AmbientState *state) {
     return false;
 }
 
-int cover_upload_rgba(CoverArt *cover, const uint32_t *tiled,
-                      size_t pixel_count, int64_t song_id,
-                      char *error, size_t error_size) {
+static int cover_upload_rgba_internal(
+    CoverArt *cover, const uint32_t *tiled, size_t pixel_count,
+    int64_t song_id, bool round_corners,
+    char *error, size_t error_size) {
     if (!cover || !tiled || pixel_count < COVER_ART_PIXELS || song_id <= 0) {
         set_error(error, error_size, "解码后的封面无效");
         return -1;
@@ -699,7 +700,7 @@ int cover_upload_rgba(CoverArt *cover, const uint32_t *tiled,
         (uint32_t)variation_entropy ^
         cover->flow_colors[0] ^ (cover->flow_colors[1] << 7U);
     (void)cover_build_flow_texture(cover);
-    uint32_t *rounded = rounded_cover_copy(tiled);
+    uint32_t *rounded = round_corners ? rounded_cover_copy(tiled) : NULL;
     C3D_TexUpload(&cover->texture, rounded ? rounded : tiled);
     free(rounded);
     C3D_TexSetFilter(&cover->texture, GPU_LINEAR, GPU_LINEAR);
@@ -715,8 +716,16 @@ int cover_upload_rgba(CoverArt *cover, const uint32_t *tiled,
     return 0;
 }
 
-int cover_load_image(CoverArt *cover, const char *path, int64_t song_id,
-                     char *error, size_t error_size) {
+int cover_upload_rgba(CoverArt *cover, const uint32_t *tiled,
+                      size_t pixel_count, int64_t song_id,
+                      char *error, size_t error_size) {
+    return cover_upload_rgba_internal(
+        cover, tiled, pixel_count, song_id, true, error, error_size);
+}
+
+static int cover_load_image_internal(
+    CoverArt *cover, const char *path, int64_t song_id, bool round_corners,
+    char *error, size_t error_size) {
     uint32_t *tiled = (uint32_t *)malloc(
         COVER_ART_PIXELS * sizeof(*tiled));
     if (!tiled) {
@@ -726,8 +735,22 @@ int cover_load_image(CoverArt *cover, const char *path, int64_t song_id,
     int result = cover_decode_image(path, tiled, COVER_ART_PIXELS,
                                     error, error_size);
     if (result == 0)
-        result = cover_upload_rgba(cover, tiled, COVER_ART_PIXELS,
-                                   song_id, error, error_size);
+        result = cover_upload_rgba_internal(
+            cover, tiled, COVER_ART_PIXELS, song_id, round_corners,
+            error, error_size);
     free(tiled);
     return result;
+}
+
+int cover_load_image(CoverArt *cover, const char *path, int64_t song_id,
+                     char *error, size_t error_size) {
+    return cover_load_image_internal(
+        cover, path, song_id, true, error, error_size);
+}
+
+int cover_load_image_square(CoverArt *cover, const char *path,
+                            int64_t song_id,
+                            char *error, size_t error_size) {
+    return cover_load_image_internal(
+        cover, path, song_id, false, error, error_size);
 }

@@ -33,6 +33,11 @@ int cover_upload_rgba(CoverArt *cover, const uint32_t *tiled,
                       char *error, size_t error_size);
 int cover_load_image(CoverArt *cover, const char *path, int64_t song_id,
                      char *error, size_t error_size);
+/* Cover Flow represents a physical jewel case, so its artwork keeps square
+ * corners while the rest of the UI retains the rounded presentation mask. */
+int cover_load_image_square(CoverArt *cover, const char *path,
+                            int64_t song_id,
+                            char *error, size_t error_size);
 bool cover_matches(const CoverArt *cover, int64_t song_id);
 C2D_Image cover_image(CoverArt *cover);
 bool cover_palette(const CoverArt *cover, uint32_t *primary_rgb,

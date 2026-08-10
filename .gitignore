@@ -15,6 +15,7 @@ __pycache__/
 .tools/
 # Local development notes; the public project documentation lives in README.
 A.md
+docs/gbatemp-3d-banner-tutorial.txt
 banner_work/
 banner_3d/banner-scene.bin
 banner_3d/banner-scene.cgfx

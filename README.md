@@ -24,8 +24,8 @@
 <p align="center">
   <img src="https://img.shields.io/badge/FA%20branch-clouds--music--fa-6C6C6C"
        alt="FA branch">
-  <img src="https://img.shields.io/badge/version-2.0.0-2F7DCC"
-       alt="Version 2.0.0">
+  <img src="https://img.shields.io/badge/version-2.0.2-2F7DCC"
+       alt="Version 2.0.2">
   <img src="https://img.shields.io/badge/platform-Nintendo%203DS-D94848"
        alt="Nintendo 3DS">
 </p>

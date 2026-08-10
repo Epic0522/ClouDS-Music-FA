@@ -6927,7 +6927,7 @@ static CoverArt *coverflow_cover_for(
     if (cache_song_path(
             STORAGE_ROOT, song_id, CACHE_ASSET_COVER,
             path, sizeof(path)) != 0 ||
-        cover_load_image(
+        cover_load_image_square(
             cover, path, song_id, error, sizeof(error)) != 0) {
         cover_clear(cover);
         cover_init(cover);

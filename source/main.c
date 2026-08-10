@@ -68,6 +68,8 @@ static bool submit_cache_job(AppState *app, NetworkWorker *worker,
 static void set_playing_status(AppState *app, int index);
 static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
                                      int index);
+static void maybe_submit_song_extras_with_mode(
+    AppState *app, NetworkWorker *worker, int index, bool force_offline);
 static int64_t current_song_id(const AppState *app);
 static int save_settings_for(const AppState *app, uint64_t cache_limit,
                              AppLanguage language, bool debug_logging,
@@ -159,9 +161,14 @@ static void update_sleep_policy(const AppState *app, const Player *player,
     if (!app || !sleep_allowed) return;
     /* A closed shell muffles the built-in speakers.  Keep the system awake
      * only when a connected headset makes lid-closed playback useful. */
+    /* A prepared track is intentionally paused for one second before start.
+     * Keep that delay under the same wake lock as an in-flight queue request;
+     * otherwise the closed shell can suspend the CPU between opening the next
+     * cached MP3 and the timer that unpauses it. */
     bool playback_pending = player_is_available(player) &&
-                            app->pending_queue >= 0 &&
-                            app->pending_queue < (int)app->queue_count;
+        ((app->pending_queue >= 0 &&
+          app->pending_queue < (int)app->queue_count) ||
+         app->playback_start_after_ms != 0U);
     bool allow = !playback_should_prevent_sleep(
         player_is_active(player), player_is_paused(player), playback_pending,
         osIsHeadsetConnected());
@@ -610,12 +617,30 @@ static void playlist_persistence_error(AppState *app, const char *error) {
     i18n_snprintf(app->status, sizeof(app->status), "%s", error);
 }
 
-static int request_queue_index(AppState *app, NetworkWorker *worker,
-                               int index, bool force_download) {
+static bool refresh_queue_offline_entry(AppState *app, int index) {
+    if (!app || index < 0 || index >= (int)app->queue_count) return false;
+    CacheAudioType type = cache_song_offline_audio_type(
+        STORAGE_ROOT, app->queue[index].id,
+        song_offline_full_allowed(&app->queue[index], app->logged_in));
+    app->queue_offline_playable[index] =
+        type != CACHE_AUDIO_TYPE_UNKNOWN;
+    app->queue_cache_known[index] = true;
+    return app->queue_offline_playable[index];
+}
+
+static void refresh_queue_offline_entries(AppState *app) {
+    if (!app) return;
+    for (size_t i = 0; i < app->queue_count; i++)
+        (void)refresh_queue_offline_entry(app, (int)i);
+}
+
+static int request_queue_index_with_mode(
+    AppState *app, NetworkWorker *worker, int index, bool force_download,
+    bool force_offline) {
     if (!worker || index < 0 || (size_t)index >= app->queue_count) return -1;
-    bool offline = !app->network_online;
+    bool offline = force_offline || !app->network_online;
     if (offline && (force_download ||
-        !app->queue_offline_playable[index])) {
+        !refresh_queue_offline_entry(app, index))) {
         i18n_snprintf(app->status, sizeof(app->status),
                       "歌曲未缓存，离线时无法播放");
         return -1;
@@ -646,6 +671,12 @@ static int request_queue_index(AppState *app, NetworkWorker *worker,
     app->pending_queue = -1;
     show_error(app, "无法启动歌曲任务");
     return -1;
+}
+
+static int request_queue_index(AppState *app, NetworkWorker *worker,
+                               int index, bool force_download) {
+    return request_queue_index_with_mode(
+        app, worker, index, force_download, false);
 }
 
 static int request_song_internal(AppState *app, PlaylistStore *store,
@@ -841,11 +872,14 @@ static void play_previous(AppState *app, NetworkWorker *worker) {
     (void)request_queue_index(app, worker, previous, false);
 }
 
-static void play_next(AppState *app, NetworkWorker *worker) {
+static void play_next_with_mode(AppState *app, NetworkWorker *worker,
+                                bool force_offline) {
     if (app->queue_count == 0) return;
     int current = app->current_queue >= 0 ?
                   app->current_queue : app->queue_selected;
-    int next = app->network_online ?
+    bool offline = force_offline || !app->network_online;
+    if (offline) refresh_queue_offline_entries(app);
+    int next = !offline ?
         playback_next_index(app->queue_count, current, app->play_mode,
                             svcGetSystemTick()) :
         playback_next_available_index(
@@ -856,7 +890,12 @@ static void play_next(AppState *app, NetworkWorker *worker) {
                       "播放列表中没有已缓存歌曲");
         return;
     }
-    (void)request_queue_index(app, worker, next, false);
+    (void)request_queue_index_with_mode(
+        app, worker, next, false, force_offline);
+}
+
+static void play_next(AppState *app, NetworkWorker *worker) {
+    play_next_with_mode(app, worker, false);
 }
 
 static void move_selection(AppState *app, int delta) {
@@ -2070,8 +2109,8 @@ static void apply_song_cover_url(AppState *app, PlaylistStore *store,
     }
 }
 
-static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
-                                     int index) {
+static void maybe_submit_song_extras_with_mode(
+    AppState *app, NetworkWorker *worker, int index, bool force_offline) {
     if (!app || !worker || index < 0 || index >= (int)app->queue_count)
         return;
     int64_t song_id = app->queue[index].id;
@@ -2084,12 +2123,17 @@ static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
     memset(&job, 0, sizeof(job));
     job.kind = WORKER_JOB_SONG_EXTRAS;
     job.song = app->queue[index];
-    job.offline_playback = !app->network_online;
+    job.offline_playback = force_offline || !app->network_online;
     if (network_worker_submit(worker, &job)) {
         app->extras_song_id = song_id;
         app->extras_retry_song_id = -1;
         app->extras_retry_after_ms = 0;
     }
+}
+
+static void maybe_submit_song_extras(AppState *app, NetworkWorker *worker,
+                                     int index) {
+    maybe_submit_song_extras_with_mode(app, worker, index, false);
 }
 
 static void maybe_submit_song_prefetch(AppState *app, Player *player,
@@ -2109,8 +2153,7 @@ static void maybe_submit_song_prefetch(AppState *app, Player *player,
         app->prefetch_done = false;
     }
     if (app->prefetch_done ||
-        app->audio_cached_song_id != current_id ||
-        app->extras_cached_song_id != current_id)
+        app->audio_cached_song_id != current_id)
         return;
 
     WorkerSnapshot worker_snapshot;
@@ -2525,9 +2568,16 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             set_network_certificate_error(app, false);
             set_network_online(app, true);
             network_retry_succeeded(network_retry);
-            if (restored)
+            if (restored) {
                 i18n_snprintf(app->status, sizeof(app->status),
                               "Wi-Fi 已连接 · 在线功能已恢复");
+                /* Offline auto-advance may have applied an empty lyric result
+                 * for the current song. Re-open that state when the probe
+                 * restores connectivity so the main loop submits one normal,
+                 * cache-first SONG_EXTRAS request automatically. */
+                if (app->lyric_count == 0 && app->current_queue >= 0)
+                    app->lyric_song_id = -1;
+            }
             if (worker && app->logged_in && app->user_id <= 0)
                 (void)submit_account_check(app, worker);
         } else {
@@ -2965,7 +3015,9 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
             else if (app->extras_cached_song_id == result->song_id)
                 app->extras_cached_song_id = -1;
             app->lyric_count = result->lyric_count;
-            app->lyric_song_id = result->song_id;
+            app->lyric_song_id =
+                result->offline_playback && app->network_online &&
+                result->lyric_count == 0 ? -1 : result->song_id;
             memcpy(app->lyrics, result->lyrics,
                    result->lyric_count * sizeof(result->lyrics[0]));
             if (result->cover_ready) {
@@ -3091,7 +3143,9 @@ static void apply_worker_result(AppState *app, PlaylistStore *store,
                 break;
             }
             app->lyric_count = result->lyric_count;
-            app->lyric_song_id = result->song_id;
+            app->lyric_song_id =
+                result->offline_playback && app->network_online &&
+                result->lyric_count == 0 ? -1 : result->song_id;
             memcpy(app->lyrics, result->lyrics,
                    result->lyric_count * sizeof(result->lyrics[0]));
             if (result->cover_ready) {
@@ -3846,7 +3900,20 @@ int main(void) {
             next_network_poll_ms = 0;
             next_battery_poll_ms = 0;
         }
+        bool shell_was_closed = shell_closed;
         update_shell_state(ptmu_ready, &shell_closed, &next_shell_poll_ms);
+        bool shell_opened = shell_was_closed && !shell_closed;
+        if (shell_opened && app.lyric_count == 0 &&
+            app.current_queue >= 0 &&
+            app.current_queue < (int)app.queue_count) {
+            /* Re-read the SD cache as soon as the lid opens; do not wait for
+             * the slower Wi-Fi restoration. If it is still empty, the normal
+             * network-restored path invalidates it once more for online sync. */
+            app.lyric_song_id = -1;
+            app.extras_song_id = -1;
+            app.extras_retry_song_id = -1;
+            app.extras_retry_after_ms = 0;
+        }
         update_battery_state(ptmu_ready, &app, &next_battery_poll_ms);
         int network_change = poll_network_link(
             &app, network_ready, &next_network_poll_ms);
@@ -3873,6 +3940,11 @@ int main(void) {
             network_retry_succeeded(&network_retry);
             i18n_snprintf(app.status, sizeof(app.status),
                           "Wi-Fi 已连接 · 在线功能已恢复");
+            /* An offline handoff may legitimately have no local lyrics. Mark
+             * that empty result unresolved once connectivity returns so the
+             * normal cache-first extras job gets one online opportunity. */
+            if (app.lyric_count == 0 && app.current_queue >= 0)
+                app.lyric_song_id = -1;
             if (worker && app.logged_in && app.user_id <= 0)
                 (void)submit_account_check(&app, worker);
         }
@@ -3898,9 +3970,9 @@ int main(void) {
                                    network_ready, shell_closed);
         if (player && player_finished(player) && app.queue_count > 0 && worker) {
             if (app.play_mode == PLAY_MODE_REPEAT_ONE && app.current_queue >= 0)
-                (void)request_queue_index(&app, worker,
-                                          app.current_queue, false);
-            else play_next(&app, worker);
+                (void)request_queue_index_with_mode(
+                    &app, worker, app.current_queue, false, shell_closed);
+            else play_next_with_mode(&app, worker, shell_closed);
         }
         /*
          * Extras may finish while a playlist-selected song is still pending.
@@ -3916,8 +3988,8 @@ int main(void) {
             int64_t current_id =
                 app.queue[app.current_queue].id;
             if (app.lyric_song_id != current_id)
-                maybe_submit_song_extras(
-                    &app, worker, app.current_queue);
+                maybe_submit_song_extras_with_mode(
+                    &app, worker, app.current_queue, shell_opened);
         }
         bool cache_detail_requested =
             app.tab == TAB_SETTINGS &&

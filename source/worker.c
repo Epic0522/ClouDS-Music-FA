@@ -307,7 +307,37 @@ static int load_song_extras(NetworkWorker *worker, const WorkerJob *job,
                             WorkerResult *result,
                             char *error, size_t error_size) {
     Song song = job->song;
-    if (!job->offline_playback && !worker_cancelled(worker)) {
+    char lyric_path[320];
+    if (cache_song_path(CACHE_ROOT, song.id, CACHE_ASSET_LYRIC,
+                        lyric_path, sizeof(lyric_path)) != 0) {
+        set_error(error, error_size, "歌词缓存路径过长");
+        return -1;
+    }
+
+    /* Lyrics are an offline-first asset. Read them before making any network
+     * request so a Wi-Fi state change can never hide a valid local cache. */
+    worker_status(worker, "正在加载缓存歌词");
+    int cached_lyrics = lyric_cache_load(
+        lyric_path, result->lyrics, NM3DS_MAX_LYRICS,
+        &result->lyric_count, error, error_size);
+    if (cached_lyrics < 0) {
+        (void)remove(lyric_path);
+        result->lyric_count = 0;
+        if (error && error_size > 0) error[0] = '\0';
+    }
+
+    if (cache_song_path(CACHE_ROOT, song.id, CACHE_ASSET_COVER,
+                        result->cover_path,
+                        sizeof(result->cover_path)) != 0) {
+        set_error(error, error_size, "封面缓存路径过长");
+        return -1;
+    }
+    bool cover_cached = existing_file(result->cover_path);
+
+    /* Song detail is only needed to discover a missing cover URL. Cached
+     * assets remain authoritative and avoid a needless online refresh. */
+    if (!job->offline_playback && !worker_cancelled(worker) &&
+        !cover_cached && !song.pic_url[0]) {
         Song detailed;
         char detail_error[192] = {0};
         worker_status(worker, "正在刷新歌曲信息");
@@ -325,13 +355,6 @@ static int load_song_extras(NetworkWorker *worker, const WorkerJob *job,
             result, WORKER_DIAGNOSTIC_SONG_DETAIL,
             netease_last_failure(worker->client), detail_error);
     }
-    if (cache_song_path(CACHE_ROOT, song.id, CACHE_ASSET_COVER,
-                        result->cover_path,
-                        sizeof(result->cover_path)) != 0) {
-        set_error(error, error_size, "封面缓存路径过长");
-        return -1;
-    }
-    bool cover_cached = existing_file(result->cover_path);
     if (worker_cancelled(worker)) return 0;
     if (!cover_cached) {
         if (job->offline_playback) result->cover_path[0] = '\0';
@@ -370,18 +393,7 @@ static int load_song_extras(NetworkWorker *worker, const WorkerJob *job,
         }
     }
     if (worker_cancelled(worker)) return 0;
-    char lyric_path[320];
-    if (cache_song_path(CACHE_ROOT, job->song.id, CACHE_ASSET_LYRIC,
-                        lyric_path, sizeof(lyric_path)) != 0) {
-        set_error(error, error_size, "歌词缓存路径过长");
-        return -1;
-    }
-    worker_status(worker, "正在加载缓存歌词");
-    int cached = lyric_cache_load(lyric_path, result->lyrics,
-                                  NM3DS_MAX_LYRICS, &result->lyric_count,
-                                  error, error_size);
-    if (cached == 0) return 0;
-    if (cached < 0) (void)remove(lyric_path);
+    if (cached_lyrics == 0) return 0;
     if (job->offline_playback) {
         result->lyric_count = 0;
         return 0;
@@ -541,81 +553,6 @@ static void run_song_extras(NetworkWorker *worker, const WorkerJob *job,
     result->success = true;
 }
 
-static int prefetch_song_extras(NetworkWorker *worker, const WorkerJob *job,
-                                WorkerResult *result,
-                                char *error, size_t error_size) {
-    Song song = job->song;
-    if (!cache_song_has_asset(CACHE_ROOT, song.id, CACHE_ASSET_COVER)) {
-        if (!song.pic_url[0]) {
-            Song detailed;
-            worker_status(worker, "后台查找下一首的专辑封面");
-            if (netease_song_detail(worker->client, song.id, &detailed,
-                                    error, error_size) != 0 ||
-                !detailed.pic_url[0]) {
-                if (!error[0])
-                    set_error(error, error_size, "下一首没有可缓存的封面");
-                return -1;
-            }
-            i18n_snprintf(song.pic_url, sizeof(song.pic_url), "%s",
-                     detailed.pic_url);
-            i18n_snprintf(result->song_pic_url, sizeof(result->song_pic_url),
-                     "%s", detailed.pic_url);
-        }
-        char cover_path[320];
-        if (cache_song_path(CACHE_ROOT, song.id, CACHE_ASSET_COVER,
-                            cover_path, sizeof(cover_path)) != 0) {
-            set_error(error, error_size, "封面缓存路径过长");
-            return -1;
-        }
-        char cover_url[512];
-        int written = i18n_snprintf(cover_url, sizeof(cover_url),
-                               "%s%sparam=128y128", song.pic_url,
-                               strchr(song.pic_url, '?') ? "&" : "?");
-        if (written < 0 || (size_t)written >= sizeof(cover_url)) {
-            set_error(error, error_size, "封面地址过长");
-            return -1;
-        }
-        worker_status(worker, "后台缓存下一首的专辑封面");
-        if (net_download_file_controlled(
-                cover_url, cover_path, NET_DOWNLOAD_COVER_MAX_BYTES,
-                NULL, NULL,
-                worker_cancelled, worker, error, error_size) != 0)
-            return -1;
-    }
-    if (worker_cancelled(worker)) return -1;
-
-    char lyric_path[320];
-    if (cache_song_path(CACHE_ROOT, song.id, CACHE_ASSET_LYRIC,
-                        lyric_path, sizeof(lyric_path)) != 0) {
-        set_error(error, error_size, "歌词缓存路径过长");
-        return -1;
-    }
-    int cached = lyric_cache_load(lyric_path, result->lyrics,
-                                  NM3DS_MAX_LYRICS, &result->lyric_count,
-                                  error, error_size);
-    if (cached < 0) (void)remove(lyric_path);
-    if (cached != 0) {
-        if (worker_cancelled(worker)) return -1;
-        worker_status(worker, "后台缓存下一首的同步歌词");
-        if (netease_lyrics(worker->client, song.id, result->lyrics,
-                           NM3DS_MAX_LYRICS, &result->lyric_count,
-                           error, error_size) != 0)
-            return -1;
-        if (lyric_cache_save(lyric_path, result->lyrics,
-                             result->lyric_count,
-                             error, error_size) != 0)
-            return -1;
-    }
-    result->song_extras_cached =
-        cache_song_has_asset(CACHE_ROOT, song.id, CACHE_ASSET_COVER) &&
-        cache_song_has_asset(CACHE_ROOT, song.id, CACHE_ASSET_LYRIC);
-    if (!result->song_extras_cached) {
-        set_error(error, error_size, "下一首的封面或歌词未能写入缓存");
-        return -1;
-    }
-    return 0;
-}
-
 static void run_prefetch_song(NetworkWorker *worker, const WorkerJob *job,
                               WorkerResult *result) {
     char error[192] = {0};
@@ -624,21 +561,18 @@ static void run_prefetch_song(NetworkWorker *worker, const WorkerJob *job,
     CacheAudioType cached_audio = cache_song_online_audio_type(
         CACHE_ROOT, job->song.id, job->allow_full_cache);
     result->prefetch_was_cached =
-        cached_audio != CACHE_AUDIO_TYPE_UNKNOWN &&
-        cache_song_has_asset(CACHE_ROOT, job->song.id,
-                             CACHE_ASSET_COVER) &&
-        cache_song_has_asset(CACHE_ROOT, job->song.id,
-                             CACHE_ASSET_LYRIC);
+        cached_audio != CACHE_AUDIO_TYPE_UNKNOWN;
     if (result->prefetch_was_cached) {
         result->audio_is_trial = cached_audio == CACHE_AUDIO_TYPE_TRIAL;
         result->prefetch_complete = true;
         result->success = true;
         return;
     }
+    /* Auto-advance only depends on audio. Cover and lyric failures must not
+     * prevent an already downloaded next track from becoming offline-playable.
+     * The normal song-extras path loads those assets, cache-first, when used. */
     if (prepare_song_cache_directory(job->song.id,
-                                     error, sizeof(error)) != 0 ||
-        prefetch_song_extras(worker, job, result,
-                             error, sizeof(error)) != 0) {
+                                     error, sizeof(error)) != 0) {
         finish_failure(worker, result, error);
         return;
     }
@@ -704,9 +638,14 @@ static void run_prefetch_song(NetworkWorker *worker, const WorkerJob *job,
         finish_failure(worker, result, "请求已取消");
         return;
     }
+    cached_audio = cache_song_online_audio_type(
+        CACHE_ROOT, job->song.id, job->allow_full_cache);
     result->prefetch_complete =
-        cache_song_is_complete(CACHE_ROOT, job->song.id);
-    result->success = true;
+        cached_audio != CACHE_AUDIO_TYPE_UNKNOWN;
+    result->success = result->prefetch_complete;
+    if (!result->success)
+        set_error(result->error, sizeof(result->error),
+                  "下一首音频未能保留在缓存中");
 }
 
 static void run_cache_job(NetworkWorker *worker, const WorkerJob *job,
