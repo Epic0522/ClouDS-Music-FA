@@ -542,7 +542,7 @@ make run
 - Apple Developer：Apple软件设计规范 https://developer.apple.com/cn/design/
 - Apple Music：动态歌词、内容层次与低频背景律动的交互参考
 - Apple Music歌词物理引擎参考：https://github.com/amll-dev/applemusic-like-lyrics
-- Azahar模拟器
+- Azahar
 
 ## 🖊️许可
 
